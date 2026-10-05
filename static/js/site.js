@@ -1,0 +1,84 @@
+// RBG Photography: small enhancements. Everything works without JavaScript too.
+(function () {
+  document.documentElement.classList.add("js");
+
+  // Mobile menu
+  var toggle = document.querySelector(".menu-toggle");
+  var nav = document.getElementById("site-nav");
+  if (toggle && nav) {
+    toggle.addEventListener("click", function () {
+      var open = nav.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.textContent = open ? "Close" : "Menu";
+    });
+  }
+
+  // Lightbox for portfolio and client galleries (links with class "lb")
+  var links = Array.prototype.slice.call(document.querySelectorAll("a.lb"));
+  if (links.length) {
+    var box = document.createElement("div");
+    box.className = "lightbox";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.setAttribute("aria-label", "Photo viewer");
+    box.innerHTML = '<img alt=""><button class="lb-close" aria-label="Close">Close</button>' +
+      '<button class="lb-prev" aria-label="Previous photo">&#8249;</button>' +
+      '<button class="lb-next" aria-label="Next photo">&#8250;</button>' +
+      '<a class="lb-dl" hidden>Download</a>';
+    document.body.appendChild(box);
+    var img = box.querySelector("img"), dl = box.querySelector(".lb-dl"), idx = 0, last = null;
+
+    function show(i) {
+      idx = (i + links.length) % links.length;
+      var a = links[idx], thumb = a.querySelector("img");
+      img.src = a.href;
+      img.alt = thumb ? thumb.alt : "";
+      if (a.dataset.download) { dl.href = a.dataset.download; dl.hidden = false; } else { dl.hidden = true; }
+    }
+    function close() { box.classList.remove("open"); img.removeAttribute("src"); if (last) last.focus(); }
+
+    links.forEach(function (a, i) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault(); last = a; show(i); box.classList.add("open"); box.querySelector(".lb-close").focus();
+      });
+    });
+    box.querySelector(".lb-close").addEventListener("click", close);
+    box.querySelector(".lb-prev").addEventListener("click", function () { show(idx - 1); });
+    box.querySelector(".lb-next").addEventListener("click", function () { show(idx + 1); });
+    box.addEventListener("click", function (e) { if (e.target === box) close(); });
+    document.addEventListener("keydown", function (e) {
+      if (!box.classList.contains("open")) return;
+      if (e.key === "Escape") close();
+      if (e.key === "ArrowLeft") show(idx - 1);
+      if (e.key === "ArrowRight") show(idx + 1);
+    });
+  }
+
+  // Book form: submit in place, fall back to a normal post on any error
+  var form = document.getElementById("inquiry-form");
+  if (form && window.fetch) {
+    var status = form.querySelector(".form-status");
+    var params = new URLSearchParams(location.search);
+    var preset = params.get("session");
+    if (preset) {
+      var sel = form.querySelector("select[name=session_type]");
+      Array.prototype.forEach.call(sel.options, function (o) { if (o.value === preset) sel.value = preset; });
+    }
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      status.textContent = "Sending…";
+      fetch(form.action, {
+        method: "POST",
+        headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(new FormData(form)).toString()
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data.ok) { location.href = "/thanks"; return; }
+        status.innerHTML = ""; var p = document.createElement("p"); p.className = "form-error";
+        p.textContent = data.error || "Something went wrong. Please try again."; status.appendChild(p);
+        btn.disabled = false;
+      }).catch(function () { form.submit(); });
+    });
+  }
+})();

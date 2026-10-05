@@ -1,0 +1,167 @@
+# RBG Photography website (Raspberry Pi edition)
+
+A lightweight website for RBG Photography that runs on a Raspberry Pi. It uses
+the Viewfinder brand kit (logo, forest/terracotta/sage/cream colors, Cormorant
+Garamond + Jost fonts) and needs nothing but the Python 3 that ships with
+Raspberry Pi OS. No database server, no npm, no pip.
+
+**What it does**
+
+| Page | What's there |
+|---|---|
+| `/` | Home: hero, intro, sessions, recent work, reviews, locations, how it works |
+| `/sessions` | Session types, prices, FAQ |
+| `/portfolio` | Photo grid with a tap-to-enlarge viewer |
+| `/locations` + 3 location pages | Patapsco Valley, Ellicott City, Sykesville (written for local Google searches) |
+| `/about` | Rachel's bio |
+| `/book` | Booking request form (saved on the Pi; optional email alert) |
+| `/gallery` | Private client galleries opened with a code; view, download one or all |
+| `/admin` | Rachel's inbox for booking requests (password protected) |
+
+Also built in: Google-friendly titles and descriptions, a `LocalBusiness`
+listing for search engines, `sitemap.xml`, `robots.txt`, social share previews,
+favicons, spam protection on the form, and security headers.
+
+---
+
+## 1. Put it on the Pi
+
+Works on any Raspberry Pi running Raspberry Pi OS (Bookworm or newer); a Pi 3B+
+or better is plenty.
+
+Copy this `website` folder to the Pi as `~/rbg-website`. Any of these work:
+
+- **USB stick:** copy the folder over, then on the Pi: `cp -r /media/$USER/<stick>/website ~/rbg-website`
+- **From another computer:** `scp -r website pi@raspberrypi.local:~/rbg-website`
+- **Git (easiest to keep updated):** `git clone https://github.com/christiangoff/rbgphotography ~/rbg-website`, and later `cd ~/rbg-website && git pull && sudo systemctl restart rbg-website` to get updates
+
+## 2. Install and start it
+
+On the Pi, open a terminal:
+
+```bash
+cd ~/rbg-website
+bash install.sh
+```
+
+That creates `config.ini`, and sets the site to start automatically whenever the
+Pi boots. It prints the address to open, usually
+**http://raspberrypi.local:8080** from any phone or computer on the same Wi-Fi.
+
+Just want to try it without installing? `python3 server.py` then open
+http://localhost:8080 (Ctrl+C stops it).
+
+## 3. Fill in the settings
+
+```bash
+nano ~/rbg-website/config.ini
+sudo systemctl restart rbg-website
+```
+
+Set at least:
+
+- `[business]` email, phone, Instagram/Facebook links (these appear across the whole site)
+- `[admin] password` to switch on the `/admin` inbox (username is `rachel`)
+- `[server] site_url` to the real address once the site is public
+- `[email]` (optional) to get an email for each booking request. With Gmail:
+  `smtp.gmail.com`, port 587, your Gmail address, and an
+  [app password](https://myaccount.google.com/apppasswords).
+
+## 4. Replace the placeholders (before launch)
+
+Placeholder images are soft brand-colored gradients labeled with their file
+name, so it's obvious what goes where.
+
+- [ ] **Photos:** put real photos in `static/img/photos/` **using the same file
+      names** (e.g. a real `hero.jpg` replaces the placeholder). Export them as
+      JPEG about 2000 px on the long side (hero) or 1500 px (everything else)
+      so pages load fast. `og-image.jpg` (1200×630) is the preview shown when
+      the site is shared on Facebook or iMessage.
+- [ ] **Reviews:** the three quotes on the home page are marked "Sample". Swap in
+      real client reviews (with permission) in `pages/index.html`.
+- [ ] **Prices:** sample prices in `pages/sessions.html` and the home page cards.
+- [ ] **Bio:** `pages/about.html` has a draft bio and a `[bracketed]` line to finish.
+- [ ] **Alt text:** describe each real photo in its `alt="..."` (helps Google and screen readers).
+- [ ] **Delete the sample gallery:** `galleries/sample-family/` (its code is `sample-2026`).
+
+Pages are plain HTML in `pages/`. Edit the words between the tags; the
+header, menu and footer come from `templates/layout.html`, and colors and fonts
+from `static/css/site.css`. Changes to pages and photos show up immediately on
+refresh, no restart needed. To add a page, create `pages/new-page.html` (copy
+the comment block at the top for its title and description) and it appears at
+`/new-page`.
+
+## 5. Booking requests
+
+Requests from `/book` are saved in `data/inquiries.db` on the Pi. Rachel reads
+them at **/admin**, marks each one New → Contacted → Booked → Archived, and can
+download everything as a spreadsheet (CSV). Turn on `[email]` in config.ini to
+also get an email for each one.
+
+## 6. Delivering a client gallery
+
+1. Copy `galleries/sample-family` to a new folder, e.g. `galleries/smith-fall-2026`
+   (lowercase, numbers and dashes only).
+2. Delete the sample photos and drop in the client's edited JPEGs.
+3. Edit `gallery.ini`: a title, a **unique access code**, an optional note and
+   an optional expiry date.
+4. Send the client the link `https://<your-site>/gallery` and their code.
+
+Optional, for big galleries: make quick-loading previews (full-size photos are
+still what clients download):
+
+```bash
+sudo apt install -y python3-pil
+python3 tools/make_thumbs.py galleries/smith-fall-2026
+```
+
+Galleries are hidden from search engines and only open with the right code.
+Photos live on the Pi's SD card, so keep your originals backed up elsewhere.
+
+## 7. Making it public (when you're ready)
+
+Out of the box the site is only reachable on your home network. To put it on
+the internet you'll need a domain name and one of:
+
+- **Cloudflare Tunnel (recommended for home hosting):** free, no router port
+  forwarding, hides your home IP, and gives HTTPS automatically. Install
+  `cloudflared` on the Pi and point a tunnel at `http://localhost:8080`.
+- **Port forwarding + Caddy:** forward ports 80 and 443 on your router to the Pi,
+  install Caddy (`sudo apt install caddy`) and use `deploy/Caddyfile`. Caddy
+  gets an HTTPS certificate automatically. Many home internet plans change your
+  IP address, so you'd also need dynamic DNS.
+
+Either way, then set in `config.ini`: `site_url = https://yourdomain.com` and
+`trust_proxy = true`, and restart. Use HTTPS before giving out gallery codes or
+the admin password over the internet.
+
+A Pi on home internet is fine for a small local business site. Upload speed is
+the usual limit: large gallery downloads may be slow on a basic home plan.
+
+## Everyday commands
+
+```bash
+sudo systemctl status rbg-website      # is it running?
+sudo systemctl restart rbg-website     # after editing config.ini
+journalctl -u rbg-website -f           # live log (Ctrl+C to exit)
+```
+
+**Back up** `config.ini`, `data/` (booking requests) and `galleries/` regularly,
+for example to a USB stick: `cp -r config.ini data galleries /media/$USER/<stick>/`.
+
+## What's in the folder
+
+```
+server.py               the whole web server (Python standard library only)
+config.example.ini      settings template (install.sh copies it to config.ini)
+install.sh              one-time Pi setup + start-on-boot service
+pages/                  page content (HTML)
+templates/layout.html   header, menu, footer shared by every page
+static/css, js, fonts   styling, small scripts, self-hosted brand fonts
+static/img/brand/       logos and icons from the Viewfinder kit
+static/img/photos/      site photos (placeholders to replace)
+galleries/              private client galleries (one folder each)
+data/                   created on first run: booking requests, secret key
+deploy/                 service file and optional Caddy config
+tools/                  thumbnail maker; placeholder generator
+```

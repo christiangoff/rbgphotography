@@ -1,0 +1,22 @@
+# systemd service: starts the site when the Pi boots and restarts it if it stops.
+# Install:  sudo cp deploy/rbg-website.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now rbg-website
+# Edit User= and the two paths below if your username or folder differ.
+[Unit]
+Description=RBG Photography website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/rbg-website
+ExecStart=/usr/bin/python3 /home/pi/rbg-website/server.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

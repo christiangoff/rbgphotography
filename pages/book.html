@@ -1,0 +1,44 @@
+<!--
+title: Book a Session
+description: Request a family, newborn or mini photography session with Rachel Goff in Woodstock, Ellicott City, Sykesville and nearby Maryland towns.
+-->
+<section class="section">
+  <div class="wrap book-grid">
+    <div>
+      <p class="eyebrow">Book a session</p>
+      <h1>Let's plan your <em>session</em></h1>
+      <p class="lede">Share a few details and I'll reply within a day or two with available dates and next steps.</p>
+      <form id="inquiry-form" class="form" method="post" action="/api/inquiry">
+        <label>Your name<input name="name" autocomplete="name" required maxlength="120"></label>
+        <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+        <label>Phone <span class="opt">(optional)</span><input name="phone" type="tel" autocomplete="tel" maxlength="40"></label>
+        <label>Session type
+          <select name="session_type">
+            <option>Family session</option>
+            <option>Mini session</option>
+            <option>Extended family</option>
+            <option>Newborn &amp; lifestyle</option>
+            <option>Fall / holiday mini</option>
+            <option>Not sure yet</option>
+          </select>
+        </label>
+        <label>How many people? <span class="opt">(and ages of kids)</span><input name="people" maxlength="40" placeholder="e.g. 2 adults, kids 2 and 5"></label>
+        <label>Preferred dates<input name="dates" maxlength="200" placeholder="e.g. weekends in late October"></label>
+        <label class="full">Location idea <span class="opt">(optional)</span><input name="location" maxlength="200" placeholder="Patapsco Valley, Ellicott City, our home…"></label>
+        <label class="full">Tell me about your family<textarea name="message" maxlength="4000" placeholder="What are you hoping to capture?"></textarea></label>
+        <label class="full">How did you hear about me? <span class="opt">(optional)</span><input name="heard" maxlength="200"></label>
+        <div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
+        <div class="full"><button class="btn" type="submit">Send my request</button></div>
+        <div class="form-status" aria-live="polite"></div>
+      </form>
+    </div>
+    <aside class="aside-box">
+      <h3>Prefer email?</h3>
+      <p>Write to <a href="mailto:{{email}}">{{email}}</a><br>{{phone_link}}</p>
+      <h3 class="mt">Service area</h3>
+      <p>Based in {{city}}, {{region}}, serving {{service_area}}.</p>
+      <h3 class="mt">What happens next</h3>
+      <p>I'll reply with open dates and a short agreement. A deposit holds your date, and I'll send a guide to help you plan outfits and timing.</p>
+    </aside>
+  </div>
+</section>

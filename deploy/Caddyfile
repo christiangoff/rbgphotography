@@ -1,0 +1,11 @@
+# Optional: Caddy in front of the site (serves port 80/443 and gets a free
+# HTTPS certificate automatically once you have a domain pointing at the Pi).
+# Install: sudo apt install caddy ; copy this to /etc/caddy/Caddyfile ;
+#          sudo systemctl reload caddy
+# Then set trust_proxy = true and site_url = https://yourdomain.com in config.ini.
+
+# For home-network only use, replace the domain with  :80
+rbgphotography.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

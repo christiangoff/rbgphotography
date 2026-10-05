@@ -1,0 +1,15 @@
+<!--
+title: Client Galleries
+description: Private client photo galleries for RBG Photography families.
+-->
+<section class="narrow center">
+  <p class="eyebrow">Client galleries</p>
+  <h1>Your <em>photos</em> are here</h1>
+  <p class="lede">Enter the gallery code from Rachel's email to view and download your photos.</p>
+  <!--error-->
+  <form class="code-form" method="post" action="/gallery">
+    <label class="hp" for="code">Gallery code</label>
+    <input id="code" name="code" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Gallery code" required maxlength="80">
+    <button class="btn" type="submit">Open gallery</button>
+  </form>
+</section>
