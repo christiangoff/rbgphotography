@@ -16,7 +16,7 @@ Raspberry Pi OS. No database server, no npm, no pip.
 | `/about` | Rachel's bio |
 | `/book` | Booking request form (saved on the Pi; optional email alert) |
 | `/gallery` | Private client galleries opened with a code; view, download one or all |
-| `/admin` | Rachel's inbox for booking requests (password protected) |
+| `/admin` | Rachel's dashboard (password protected): booking requests, client list, galleries, site photos |
 
 Also built in: Google-friendly titles and descriptions, a `LocalBusiness`
 listing for search engines, `sitemap.xml`, `robots.txt`, social share previews,
@@ -67,56 +67,58 @@ Set at least:
   `smtp.gmail.com`, port 587, your Gmail address, and an
   [app password](https://myaccount.google.com/apppasswords).
 
-## 4. Replace the placeholders (before launch)
+## 4. The admin dashboard
+
+Open **/admin** (username `rachel`, the password from `config.ini`). Everything
+below works from a phone or laptop on the same network.
+
+- **Inquiries:** booking requests from the Book page. Mark each one New →
+  Contacted → Booked → Archived, download them as a spreadsheet, or press
+  **Add to clients** to turn one into a client record.
+- **Clients:** your client list with search, a status (lead, active, past),
+  family details and private notes. Each client page shows their inquiries and
+  galleries and has a **New gallery** button.
+- **Galleries:** create a gallery, link it to a client, set its access code
+  (one is suggested for you), an optional note and an expiry date. Drag photos
+  onto the page to upload them. The page gives you a ready-to-send message with
+  the link and code. Clients open galleries at `/gallery`.
+- **Site photos:** replace any photo on the site (hero, session cards, location
+  pages, Rachel's portrait) and it updates everywhere at once. Add, remove and
+  reorder portfolio photos; the first four also appear on the home page.
+
+Nothing is erased: deleted galleries and photos, and the old version of any
+replaced photo, are moved to `data/trash/` on the Pi. Empty it now and then.
+
+For faster gallery previews, install Pillow once on the Pi
+(`sudo apt install -y python3-pil`) and restart; new uploads then get small
+preview copies automatically.
+
+## 5. Replace the placeholders (before launch)
 
 Placeholder images are soft brand-colored gradients labeled with their file
 name, so it's obvious what goes where.
 
-- [ ] **Photos:** put real photos in `static/img/photos/` **using the same file
-      names** (e.g. a real `hero.jpg` replaces the placeholder). Export them as
-      JPEG about 2000 px on the long side (hero) or 1500 px (everything else)
+- [ ] **Photos:** use **Site photos** in the admin to replace each one. Export
+      JPEGs about 2000 px on the long side (hero) or 1500 px (everything else)
       so pages load fast. `og-image.jpg` (1200×630) is the preview shown when
       the site is shared on Facebook or iMessage.
 - [ ] **Reviews:** the three quotes on the home page are marked "Sample". Swap in
       real client reviews (with permission) in `pages/index.html`.
 - [ ] **Prices:** sample prices in `pages/sessions.html` and the home page cards.
 - [ ] **Bio:** `pages/about.html` has a draft bio and a `[bracketed]` line to finish.
-- [ ] **Alt text:** describe each real photo in its `alt="..."` (helps Google and screen readers).
-- [ ] **Delete the sample gallery:** `galleries/sample-family/` (its code is `sample-2026`).
+- [ ] **Delete the sample gallery** in **Galleries** (its code is `sample-2026`).
 
-Pages are plain HTML in `pages/`. Edit the words between the tags; the
+Page text is plain HTML in `pages/`. Edit the words between the tags; the
 header, menu and footer come from `templates/layout.html`, and colors and fonts
-from `static/css/site.css`. Changes to pages and photos show up immediately on
-refresh, no restart needed. To add a page, create `pages/new-page.html` (copy
-the comment block at the top for its title and description) and it appears at
-`/new-page`.
+from `static/css/site.css`. Changes show up on refresh, no restart needed. To
+add a page, create `pages/new-page.html` (copy the comment block at the top for
+its title and description) and it appears at `/new-page`.
 
-## 5. Booking requests
+## 6. Backups
 
-Requests from `/book` are saved in `data/inquiries.db` on the Pi. Rachel reads
-them at **/admin**, marks each one New → Contacted → Booked → Archived, and can
-download everything as a spreadsheet (CSV). Turn on `[email]` in config.ini to
-also get an email for each one.
-
-## 6. Delivering a client gallery
-
-1. Copy `galleries/sample-family` to a new folder, e.g. `galleries/smith-fall-2026`
-   (lowercase, numbers and dashes only).
-2. Delete the sample photos and drop in the client's edited JPEGs.
-3. Edit `gallery.ini`: a title, a **unique access code**, an optional note and
-   an optional expiry date.
-4. Send the client the link `https://<your-site>/gallery` and their code.
-
-Optional, for big galleries: make quick-loading previews (full-size photos are
-still what clients download):
-
-```bash
-sudo apt install -y python3-pil
-python3 tools/make_thumbs.py galleries/smith-fall-2026
-```
-
-Galleries are hidden from search engines and only open with the right code.
-Photos live on the Pi's SD card, so keep your originals backed up elsewhere.
+Booking requests and the client list live in `data/inquiries.db`; galleries
+live in `galleries/`. Photos live on the Pi's SD card, so keep originals
+backed up elsewhere too (see Everyday commands below).
 
 ## 7. Making it public (when you're ready)
 
