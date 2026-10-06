@@ -77,7 +77,7 @@ Set at least:
 Open **/admin** (username `rachel`, the password from `config.ini`). Everything
 below works from a phone or laptop on the same network. A sidebar on the left
 (a Menu button on phones) takes you between sections, and the **Dashboard**
-shows new inquiries, recent galleries and shortcuts for common jobs.
+shows new requests, upcoming sessions, recent galleries and shortcuts for common jobs.
 
 - **Sessions:** every request from the Book page, then the session itself.
   Move each one through New → Contacted → Booked → Completed → Archived. Open
@@ -102,7 +102,7 @@ shows new inquiries, recent galleries and shortcuts for common jobs.
   link once the site is public; until then use "Download calendar file" and
   import it.
 - **Clients:** your client list with search, a status (lead, active, past),
-  family details and private notes. Each client page shows their inquiries and
+  family details and private notes. Each client page shows their sessions and
   galleries and has a **New gallery** button.
 - **Galleries:** create a gallery, link it to a client, set its access code
   (one is suggested for you), an optional note and an expiry date. Drag photos
@@ -114,7 +114,7 @@ shows new inquiries, recent galleries and shortcuts for common jobs.
   ready-written message (booking confirmation, reply, session reminder, gallery
   ready, thank you) with their name, session, date, place or gallery code
   filled in. Edit it, then press Send. Sending a booking confirmation also marks
-  the inquiry Booked and adds them to your clients. Edit the starting text under
+  the session Booked and adds them to your clients. Edit the starting text under
   **Emails → Templates**; everything sent is listed there and on each client's
   page. Until `[email]` is set up, Send opens your own email app instead.
 - **Site photos:** replace any photo on the site (hero, session cards, location
