@@ -26,7 +26,9 @@ description: Request a family, newborn or mini photography session with Rachel G
           <div class="count"><label for="f-adults">Adults</label><input id="f-adults" name="adults" type="number" inputmode="numeric" min="1" max="30" required value="2"></div>
           <div class="count"><label for="f-kids">Kids</label><input id="f-kids" name="kids" type="number" inputmode="numeric" min="0" max="30" required value="0"></div>
         </fieldset>
-        <label>Preferred dates<input name="dates" maxlength="200" placeholder="e.g. weekends in late October"></label>
+        <label>Preferred date<input name="pref_date" type="date"></label>
+        <label>Preferred time <span class="opt">(evening light is lovely)</span><input name="pref_time" type="time" step="900"></label>
+        <label>Other dates that work <span class="opt">(optional)</span><input name="dates" maxlength="200" placeholder="e.g. any weekend in late October"></label>
         <label class="full">Location idea <span class="opt">(optional)</span><input name="location" maxlength="200" placeholder="Patapsco Valley, Ellicott City, our home…"></label>
         <label class="full">Tell me about your family<textarea name="message" maxlength="4000" placeholder="Kids' ages, what you're hoping to capture…"></textarea></label>
         <label class="full">How did you hear about me? <span class="opt">(optional)</span><input name="heard" maxlength="200"></label>

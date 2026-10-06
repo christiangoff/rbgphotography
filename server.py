@@ -111,7 +111,7 @@ def load_config():
         "business": {"name": "RBG Photography", "photographer": "Rachel Goff",
                      "email": "hello@example.com", "phone": "", "city": "Woodstock",
                      "region": "MD", "service_area": "Howard, Baltimore & Carroll Counties",
-                     "instagram": "", "facebook": "", "deposit_link": "", "deposit": ""},
+                     "instagram": "", "facebook": "", "deposit_link": "", "deposit": "$50"},
         "admin": {"username": "rachel", "password": ""},
         "email": {"enabled": "false", "smtp_host": "", "smtp_port": "587", "smtp_user": "",
                   "smtp_password": "", "from_address": "", "notify_address": ""},
@@ -190,7 +190,8 @@ with db() as _c:
         "inquiries": {"client_id": "INTEGER", "adults": "INTEGER", "kids": "INTEGER",
                       "session_date": "TEXT", "session_time": "TEXT", "session_location": "TEXT",
                       "price": "TEXT", "deposit": "TEXT", "deposit_link": "TEXT",
-                      "deposit_paid": "TEXT", "paid_full": "TEXT", "gallery": "TEXT"},
+                      "deposit_paid": "TEXT", "paid_full": "TEXT", "gallery": "TEXT",
+                      "pref_date": "TEXT", "pref_time": "TEXT"},
         "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
                     "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
                     "adults": "INTEGER", "kids": "INTEGER"},
@@ -959,13 +960,20 @@ class Handler(BaseHTTPRequestHandler):
             data["session_type"] = "Not sure yet"
         adults, kids = headcount(form)
         data["people"] = party(adults, kids)
+        pref_date = (form.get("pref_date") or "").strip()
+        pref_date = pref_date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pref_date) else None
+        pref_time = (form.get("pref_time") or "").strip()
+        pref_time = pref_time if re.fullmatch(r"\d{1,2}:\d{2}", pref_time) else None
         ip = self.client_ip()
         if not INQUIRY_LIMIT.allow(ip):
             return fail("Thanks! We've received several messages from you already. Rachel will be in touch soon.", 429)
         with DB_LOCK, db() as c:
             c.execute("""INSERT INTO inquiries (created, name, email, phone, session_type, people,
-                         dates, location, heard, message, ip, adults, kids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip, adults, kids))
+                         dates, location, heard, message, ip, adults, kids, pref_date, pref_time)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip, adults, kids, pref_date, pref_time))
+        data["preferred"] = ", ".join(x for x in [nice_date(pref_date) if pref_date else "",
+                                                  nice_time(pref_time) if pref_time else ""] if x)
         threading.Thread(target=notify, args=(dict(data),), daemon=True).start()
         if wants_json:
             return self.send(200, json.dumps({"ok": True}), "application/json")
@@ -1231,7 +1239,10 @@ class Handler(BaseHTTPRequestHandler):
                        for s in STATUSES)
         details = "".join(
             f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in
-            [("Phone", r["phone"]), ("Who's coming", party_of(r)), ("Dates asked for", r["dates"]),
+            [("Phone", r["phone"]), ("Who's coming", party_of(r)),
+             ("Asked for", ", ".join(x for x in [nice_date(r["pref_date"]) if r["pref_date"] else "",
+                                                 nice_time(r["pref_time"]) if r["pref_time"] else ""] if x)),
+             ("Other dates", r["dates"]),
              ("Location idea", r["location"]), ("Heard about us", r["heard"])] if val)
         when = ", ".join(x for x in [nice_date(r["session_date"]) if r["session_date"] else "",
                                      nice_time(r["session_time"]) if r["session_time"] else ""] if x)
@@ -1263,13 +1274,13 @@ class Handler(BaseHTTPRequestHandler):
   <details class="session-box"{" open" if booked else ""}>
     <summary>Session details{f' · {esc(when)}' if when else ''}</summary>
     <form method="post" action="/admin/sessions/{sid}/save" class="form compact">
-      <label>Date<input type="date" name="session_date" value="{v('session_date')}"></label>
-      <label>Time<input type="time" name="session_time" value="{v('session_time')}"></label>
-      <label class="full">Location<input name="session_location" maxlength="200" value="{v('session_location')}"></label>
+      <label>Date<input type="date" name="session_date" value="{esc(r['session_date'] or r['pref_date'] or '')}"></label>
+      <label>Time<input type="time" name="session_time" value="{esc(r['session_time'] or r['pref_time'] or '')}"></label>
+      <label class="full">Location<input name="session_location" maxlength="200" value="{esc(r['session_location'] or r['location'] or '')}"></label>
       <label>Price<input name="price" maxlength="40" value="{v('price')}" placeholder="$425"></label>
-      <label>Deposit<input name="deposit" maxlength="40" value="{v('deposit')}" placeholder="{esc(CFG['business']['deposit'] or '$100')}"></label>
+      <label>Deposit<input name="deposit" maxlength="40" value="{esc(r['deposit'] or CFG['business']['deposit'])}"></label>
       <label class="full">Deposit link <span class="opt">(goes in the confirmation email)</span>
-        <input name="deposit_link" type="url" maxlength="500" value="{v('deposit_link')}" placeholder="{esc(CFG['business']['deposit_link'] or 'https://square.link/…')}"></label>
+        <input name="deposit_link" type="url" maxlength="500" value="{esc(r['deposit_link'] or CFG['business']['deposit_link'])}" placeholder="https://…"></label>
       <div class="full row-actions"><button class="btn small">Save details</button></div>
     </form>
     <div class="payments">{pay("deposit", "Deposit paid", r["deposit_paid"])}{pay("full", "Paid in full", r["paid_full"])}</div>
@@ -1370,7 +1381,7 @@ class Handler(BaseHTTPRequestHandler):
                     v.update(name=r["name"], session_type=(r["session_type"] or "session").lower(),
                              location=r["session_location"] or r["location"], price=r["price"])
                     ctx["raw"].update({k: val for k, val in [
-                        ("date", r["session_date"]), ("time", r["session_time"]),
+                        ("date", r["session_date"] or r["pref_date"]), ("time", r["session_time"] or r["pref_time"]),
                         ("location", r["session_location"] or r["location"]),
                         ("deposit", r["deposit"]), ("deposit_link", r["deposit_link"])] if val})
                     if r["dates"]:
