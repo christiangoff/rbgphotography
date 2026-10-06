@@ -173,8 +173,20 @@ with db() as _c:
     # one live booking per slot, enforced by the database itself
     _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
-    if "client_id" not in [r[1] for r in _c.execute("PRAGMA table_info(inquiries)")]:
-        _c.execute("ALTER TABLE inquiries ADD COLUMN client_id INTEGER")
+    # Bring databases made by older versions up to date by adding any missing columns.
+    for _table, _cols in {
+        "inquiries": {"client_id": "INTEGER"},
+        "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
+                    "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'"},
+        "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
+                        "status": "TEXT NOT NULL DEFAULT 'draft'"},
+        "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
+                          "ref": "TEXT", "ip": "TEXT"},
+    }.items():
+        _have = {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}
+        for _col, _ddl in _cols.items():
+            if _col not in _have:
+                _c.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_ddl}")
 
 
 # --------------------------------------------------------------------------- rate limiting
