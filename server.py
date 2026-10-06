@@ -111,7 +111,7 @@ def load_config():
         "business": {"name": "RBG Photography", "photographer": "Rachel Goff",
                      "email": "hello@example.com", "phone": "", "city": "Woodstock",
                      "region": "MD", "service_area": "Howard, Baltimore & Carroll Counties",
-                     "instagram": "", "facebook": "", "deposit_link": "", "deposit": "$50"},
+                     "instagram": "", "facebook": "", "payment_link": "", "deposit_link": "", "deposit": "$50"},
         "admin": {"username": "rachel", "password": ""},
         "email": {"enabled": "false", "smtp_host": "", "smtp_port": "587", "smtp_user": "",
                   "smtp_password": "", "from_address": "", "notify_address": ""},
@@ -125,6 +125,8 @@ def load_config():
 
 
 CFG = load_config()
+# One payment link (Venmo, Square...) for deposits and balances; deposit_link is its older name.
+CFG["business"]["payment_link"] = CFG["business"]["payment_link"] or CFG["business"]["deposit_link"]
 DATA.mkdir(exist_ok=True)
 
 
@@ -616,7 +618,7 @@ EMAIL_TEMPLATES = [
     ("confirm", "Booking confirmation", "Your {session_type} is confirmed",
      "Hi {first_name},\n\nThank you for booking with {business}! Your {session_type} is confirmed:\n\n"
      "Date: {date}\nTime: {time}\nLocation: {location}\n\n"
-     "To hold your date, please pay the {deposit} deposit here:\n{deposit_link}\n\n"
+     "To hold your date, please pay the {deposit} deposit here:\n{payment_link}\n\n"
      "I'll send a few tips on what to wear and what to bring a week before. If anything changes, "
      "just reply to this email.\n\nSee you soon!\n{photographer}\n{business}"),
     ("reply", "Reply to a session request", "Your session with {business}",
@@ -626,6 +628,9 @@ EMAIL_TEMPLATES = [
      "Hi {first_name},\n\nJust a reminder that your {session_type} is coming up on {date} at {time}, "
      "at {location}.\n\nPlease arrive a few minutes early. If the weather looks iffy, I'll reach out "
      "the day before.\n\nSee you soon!\n{photographer}"),
+    ("balance", "Payment request", "Your balance for your {session_type}",
+     "Hi {first_name},\n\nThank you again for choosing {business}! Your remaining balance of {balance} "
+     "can be paid here:\n{payment_link}\n\nPlease let me know once it's sent. Thank you!\n{photographer}\n{business}"),
     ("gallery", "Gallery ready", "Your photos are ready!",
      "Hi {first_name},\n\nYour photos are ready! Open {gallery_link} and enter the code {gallery_code} "
      "to view and download them.\n\nIt was such a joy photographing your family.\n\n{photographer}\n{business}"),
@@ -655,6 +660,18 @@ def email_enabled():
 def fill_template(text, values):
     """Replace {word} with values[word]; words with no value are left for Rachel to fill in."""
     return re.sub(r"\{([a-z_]+)\}", lambda m: str(values[m.group(1)]) if values.get(m.group(1)) else m.group(0), text)
+
+
+def balance_due(price, deposit, deposit_paid):
+    """'$375' from a '$425' price less a paid '$50' deposit; empty when the price isn't a plain amount."""
+    def amount(text):
+        m = re.fullmatch(r"\$?\s*([\d,]+(?:\.\d{1,2})?)", (text or "").strip())
+        return float(m.group(1).replace(",", "")) if m else None
+    total = amount(price)
+    if total is None:
+        return ""
+    left = total - ((amount(deposit) or 0) if deposit_paid else 0)
+    return f"${left:,.2f}".replace(".00", "")
 
 
 def unfilled(text):
@@ -1279,8 +1296,8 @@ class Handler(BaseHTTPRequestHandler):
       <label class="full">Location<input name="session_location" maxlength="200" value="{esc(r['session_location'] or r['location'] or '')}"></label>
       <label>Price<input name="price" maxlength="40" value="{v('price')}" placeholder="$425"></label>
       <label>Deposit<input name="deposit" maxlength="40" value="{esc(r['deposit'] or CFG['business']['deposit'])}"></label>
-      <label class="full">Deposit link <span class="opt">(goes in the confirmation email)</span>
-        <input name="deposit_link" type="url" maxlength="500" value="{esc(r['deposit_link'] or CFG['business']['deposit_link'])}" placeholder="https://…"></label>
+      <label class="full">Payment link <span class="opt">(for the deposit and the balance)</span>
+        <input name="deposit_link" type="url" maxlength="500" value="{esc(r['deposit_link'] or CFG['business']['payment_link'])}" placeholder="https://…"></label>
       <div class="full row-actions"><button class="btn small">Save details</button></div>
     </form>
     <div class="payments">{pay("deposit", "Deposit paid", r["deposit_paid"])}{pay("full", "Paid in full", r["paid_full"])}</div>
@@ -1300,6 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
     </form>
     {client_btn}{gallery_btn}
     <a class="btn small" href="/admin/email?inquiry={sid}&amp;template=confirm">{'Resend confirmation' if booked else 'Confirm booking'}</a>
+    {f'<a class="btn ghost small" href="/admin/email?inquiry={sid}&amp;template=balance">Request payment</a>' if booked and not r["paid_full"] else ''}
     <a class="btn ghost small" href="/admin/email?inquiry={sid}&amp;template=reply">Email</a>
   </div>
 </article>"""
@@ -1369,7 +1387,7 @@ class Handler(BaseHTTPRequestHandler):
         site = CFG["server"]["site_url"].rstrip("/")
         ctx = {"to": "", "who": "", "client_id": None, "inquiry_id": None, "back": "/admin/clients", "hint": "",
                "ids": {k: q[k] for k in self.CONTEXT_KEYS if (q.get(k) or "").strip()},
-               "raw": {"deposit": b.get("deposit", ""), "deposit_link": b.get("deposit_link", "")}}
+               "raw": {"deposit": b.get("deposit", ""), "deposit_link": b.get("payment_link", "")}}
         v = {"photographer": b["photographer"], "business": b["name"], "business_email": b["email"],
              "business_phone": b.get("phone", ""), "site": site, "gallery_link": f"{site}/gallery"}
         with db() as c:
@@ -1380,6 +1398,7 @@ class Handler(BaseHTTPRequestHandler):
                                back=f"/admin/sessions#s{r['id']}")
                     v.update(name=r["name"], session_type=(r["session_type"] or "session").lower(),
                              location=r["session_location"] or r["location"], price=r["price"])
+                    ctx["deposit_paid"] = bool(r["deposit_paid"])
                     ctx["raw"].update({k: val for k, val in [
                         ("date", r["session_date"] or r["pref_date"]), ("time", r["session_time"] or r["pref_time"]),
                         ("location", r["session_location"] or r["location"]),
@@ -1418,6 +1437,10 @@ class Handler(BaseHTTPRequestHandler):
         for k, n in (("location", 200), ("deposit", 40), ("deposit_link", 500)):
             if raw.get(k):
                 v[k] = raw[k][:n]
+        v["payment_link"] = v.get("deposit_link", "")
+        bal = balance_due(v.get("price"), raw.get("deposit"), ctx.get("deposit_paid"))
+        if bal:
+            v["balance"] = bal
         v.setdefault("session_type", "session")
         ctx["values"] = v
         return ctx
@@ -1445,8 +1468,8 @@ class Handler(BaseHTTPRequestHandler):
         if "booking" not in ctx["ids"]:
             for k, label, attrs in (("date", "Date", 'type="date"'), ("time", "Time", 'type="time"'),
                                     ("location", "Location", 'maxlength="200"'), ("deposit", "Deposit amount", 'maxlength="40"'),
-                                    ("deposit_link", "Deposit link", 'type="url" maxlength="500"')):
-                if k in uses:
+                                    ("deposit_link", "Payment link", 'type="url" maxlength="500"')):
+                if k in uses or (k == "deposit_link" and "payment_link" in uses):
                     wide = ' class="full"' if k in ("location", "deposit_link") else ""
                     fields += f'<label{wide}>{label}<input name="{k}" {attrs} value="{esc(raw.get(k, ""))}"></label>'
         opts = "".join(f'<option value="{t["key"]}"{" selected" if t["key"] == tpl["key"] else ""}>{esc(t["name"])}</option>'

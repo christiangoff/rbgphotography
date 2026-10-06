@@ -81,14 +81,15 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
 
 - **Sessions:** every request from the Book page, then the session itself.
   Move each one through New → Contacted → Booked → Completed → Archived. Open
-  **Session details** to save the date, time, location, price, deposit and a
-  deposit payment link, then tick **Mark deposit paid** and **Mark paid in
+  **Session details** to save the date, time, location, price, deposit and the
+  payment link, then tick **Mark deposit paid** and **Mark paid in
   full** as money comes in (the date is recorded; Undo if you clicked by
   mistake). **Confirm booking** emails the family with the date, place and
-  deposit link filled in and marks the session Booked. **Create gallery** starts
+  payment link filled in and marks the session Booked. **Request payment**
+  emails the remaining balance (price less a paid deposit) with the same link. **Create gallery** starts
   a gallery already named and linked to that family. Set a usual deposit amount
   and payment link under `[business]` in `config.ini` (`deposit`,
-  `deposit_link`) to have them filled in automatically.
+  `payment_link`) to have them filled in automatically.
 - **Mini sessions:** set up a mini session day (date, place, start and end
   time, minutes per family, break between families, price, details) and set it
   to **Open**. Families pick a free time at `/minis` and it's theirs; nobody can
