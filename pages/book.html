@@ -22,10 +22,13 @@ description: Request a family, newborn or mini photography session with Rachel G
             <option>Not sure yet</option>
           </select>
         </label>
-        <label>How many people? <span class="opt">(and ages of kids)</span><input name="people" maxlength="40" placeholder="e.g. 2 adults, kids 2 and 5"></label>
+        <fieldset class="headcount"><legend>Who's coming?</legend>
+          <div class="count"><label for="f-adults">Adults</label><input id="f-adults" name="adults" type="number" inputmode="numeric" min="1" max="30" required value="2"></div>
+          <div class="count"><label for="f-kids">Kids</label><input id="f-kids" name="kids" type="number" inputmode="numeric" min="0" max="30" required value="0"></div>
+        </fieldset>
         <label>Preferred dates<input name="dates" maxlength="200" placeholder="e.g. weekends in late October"></label>
         <label class="full">Location idea <span class="opt">(optional)</span><input name="location" maxlength="200" placeholder="Patapsco Valley, Ellicott City, our home…"></label>
-        <label class="full">Tell me about your family<textarea name="message" maxlength="4000" placeholder="What are you hoping to capture?"></textarea></label>
+        <label class="full">Tell me about your family<textarea name="message" maxlength="4000" placeholder="Kids' ages, what you're hoping to capture…"></textarea></label>
         <label class="full">How did you hear about me? <span class="opt">(optional)</span><input name="heard" maxlength="200"></label>
         <div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
         <div class="full"><button class="btn" type="submit">Send my request</button></div>

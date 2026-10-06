@@ -175,13 +175,14 @@ with db() as _c:
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
     # Bring databases made by older versions up to date by adding any missing columns.
     for _table, _cols in {
-        "inquiries": {"client_id": "INTEGER"},
+        "inquiries": {"client_id": "INTEGER", "adults": "INTEGER", "kids": "INTEGER"},
         "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
-                    "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'"},
+                    "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
+                    "adults": "INTEGER", "kids": "INTEGER"},
         "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
                         "status": "TEXT NOT NULL DEFAULT 'draft'"},
         "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
-                          "ref": "TEXT", "ip": "TEXT"},
+                          "ref": "TEXT", "ip": "TEXT", "adults": "INTEGER", "kids": "INTEGER"},
     }.items():
         _have = {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}
         for _col, _ddl in _cols.items():
@@ -393,6 +394,39 @@ def new_gallery_code():
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48] or "gallery"
+
+
+def headcount(form, adults=2, kids=0):
+    """Adults and kids from the two number pickers, kept to sensible whole numbers."""
+    def num(key, default, low):
+        try:
+            return max(low, min(30, int((form.get(key) or "").strip())))
+        except ValueError:
+            return default
+    return num("adults", adults, 1), num("kids", kids, 0)
+
+
+def party(adults, kids):
+    """'2 adults, 1 kid' from stored counts; empty when the counts were never recorded."""
+    if adults is None and kids is None:
+        return ""
+    a, k = adults or 0, kids or 0
+    return f"{a} adult{'' if a == 1 else 's'}, {k} kid{'' if k == 1 else 's'}"
+
+
+def party_of(row):
+    """Party size for a row, falling back to the free-text answer older versions stored."""
+    keys = row.keys()
+    text = party(row["adults"], row["kids"]) if "adults" in keys else ""
+    return text or (row["people"] if "people" in keys else "") or ""
+
+
+def pickers(adults, kids, legend="Who's coming?"):
+    """The adults and kids number pickers (static/js adds the minus and plus buttons)."""
+    return f"""<fieldset class="headcount"><legend>{legend}</legend>
+          <div class="count"><label for="f-adults">Adults</label><input id="f-adults" name="adults" type="number" inputmode="numeric" min="1" max="30" required value="{adults}"></div>
+          <div class="count"><label for="f-kids">Kids</label><input id="f-kids" name="kids" type="number" inputmode="numeric" min="0" max="30" required value="{kids}"></div>
+        </fieldset>"""
 
 
 def snippet(text, n=160):
@@ -804,13 +838,15 @@ class Handler(BaseHTTPRequestHandler):
             return fail("Please include your name and a valid email address so Rachel can reply.")
         if data["session_type"] not in SESSION_TYPES:
             data["session_type"] = "Not sure yet"
+        adults, kids = headcount(form)
+        data["people"] = party(adults, kids)
         ip = self.client_ip()
         if not INQUIRY_LIMIT.allow(ip):
             return fail("Thanks! We've received several messages from you already. Rachel will be in touch soon.", 429)
         with DB_LOCK, db() as c:
             c.execute("""INSERT INTO inquiries (created, name, email, phone, session_type, people,
-                         dates, location, heard, message, ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip))
+                         dates, location, heard, message, ip, adults, kids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip, adults, kids))
         threading.Thread(target=notify, args=(dict(data),), daemon=True).start()
         if wants_json:
             return self.send(200, json.dumps({"ok": True}), "application/json")
@@ -1034,9 +1070,9 @@ class Handler(BaseHTTPRequestHandler):
             opts = "".join(f'<option value="{s}"{" selected" if s == r["status"] else ""}>{s.title()}</option>'
                            for s in STATUSES)
             details = "".join(
-                f"<dt>{label}</dt><dd>{esc(r[k])}</dd>" for k, label in
-                [("phone", "Phone"), ("people", "People"), ("dates", "Dates"),
-                 ("location", "Location"), ("heard", "Heard about us")] if r[k])
+                f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in
+                [("Phone", r["phone"]), ("Who's coming", party_of(r)), ("Dates", r["dates"]),
+                 ("Location", r["location"]), ("Heard about us", r["heard"])] if val)
             if r["client_id"]:
                 client_btn = f'<a class="btn ghost small" href="/admin/clients/{r["client_id"]}">View client</a>'
             else:
@@ -1091,10 +1127,11 @@ class Handler(BaseHTTPRequestHandler):
                     f"Dates: {r['dates']}" if r["dates"] else "",
                     f"Location: {r['location']}" if r["location"] else "",
                     f"Heard about us: {r['heard']}" if r["heard"] else ""] if x)
-                cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status)
-                                   VALUES (?,?,?,?,?,?, 'lead')""",
+                counted = r["adults"] is not None
+                cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status, adults, kids)
+                                   VALUES (?,?,?,?,?,?, 'lead', ?, ?)""",
                                 (time.strftime("%Y-%m-%d"), r["name"], r["email"], r["phone"],
-                                 r["people"], note)).lastrowid
+                                 "" if counted else r["people"], note, r["adults"], r["kids"])).lastrowid
             c.execute("UPDATE inquiries SET client_id=? WHERE id=?", (cid, inquiry_id))
             c.execute("UPDATE inquiries SET client_id=? WHERE client_id IS NULL AND lower(email)=lower(?)",
                       (cid, r["email"]))
@@ -1124,15 +1161,19 @@ class Handler(BaseHTTPRequestHandler):
             f'<a href="/admin/clients?status={k}&amp;q={quote(search)}"{CURRENT if k == status else ""}>'
             f'{label} <span>{sum(counts.values()) if k == "all" else counts.get(k, 0)}</span></a>'
             for k, label in [("all", "All"), *[(s, s.title()) for s in CLIENT_STATUSES]])
+        dash = '<span class="muted">—</span>'
         trs = "".join(f"""<tr>
   <td><a href="/admin/clients/{r['id']}"><strong>{esc(r['name'])}</strong></a></td>
-  <td>{f'<a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>' if r['email'] else ''}<br><span class="muted">{esc(r['phone'])}</span></td>
-  <td>{esc(r['family'])}</td>
-  <td><span class="tag">{esc(r['status'])}</span></td>
-  <td>{gal_counts.get(r['id'], 0) or ''}</td>
+  <td>{f'<a href="mailto:{esc(r["email"])}">{esc(r["email"])}</a>' if r['email'] else dash}</td>
+  <td class="nowrap">{esc(r['phone']) or dash}</td>
+  <td class="nowrap">{esc(party(r['adults'], r['kids'])) or dash}</td>
+  <td>{esc(r['family']) or dash}</td>
+  <td><span class="tag {'ok' if r['status'] == 'active' else ''}">{esc(r['status'])}</span></td>
+  <td class="num">{gal_counts.get(r['id'], 0) or dash}</td>
 </tr>""" for r in rows)
-        table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Contact</th><th>Family</th>'
-                 f'<th>Status</th><th>Galleries</th></tr></thead><tbody>{trs}</tbody></table></div>'
+        table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Email</th><th>Phone</th>'
+                 f'<th>Family size</th><th>Family details</th><th>Status</th><th class="num">Galleries</th></tr></thead>'
+                 f'<tbody>{trs}</tbody></table></div>'
                  if rows else '<p class="muted">No clients yet. Add one, or use “Add to clients” on an inquiry.</p>')
         body = f"""
   <div class="admin-head"><h1>Clients</h1><a class="btn small" href="/admin/clients/new">Add client</a></div>
@@ -1169,7 +1210,8 @@ class Handler(BaseHTTPRequestHandler):
     <label>Status<select name="status">{opts}</select></label>
     <label>Email<input name="email" type="email" value="{v('email')}" maxlength="200"></label>
     <label>Phone<input name="phone" value="{v('phone')}" maxlength="40"></label>
-    <label class="full">Family <span class="opt">(names, kids' ages, pets)</span><input name="family" value="{v('family')}" maxlength="300"></label>
+    {pickers(r["adults"] if r and r["adults"] is not None else 2, r["kids"] if r and r["kids"] is not None else 0, "Family size")}
+    <label>Family details <span class="opt">(names, kids' ages, pets)</span><input name="family" value="{v('family')}" maxlength="300"></label>
     <label class="full">Notes<textarea name="notes" maxlength="8000">{v('notes')}</textarea></label>
     <div class="full row-actions"><button class="btn">Save client</button>
       <a class="btn ghost" href="/admin/clients">Back to clients</a></div>
@@ -1206,15 +1248,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/admin/clients/new")
         if f["status"] not in CLIENT_STATUSES:
             f["status"] = "active"
-        vals = (f["name"][:120], f["email"][:200], f["phone"][:40], f["family"][:300], f["notes"][:8000], f["status"])
+        vals = (f["name"][:120], f["email"][:200], f["phone"][:40], f["family"][:300], f["notes"][:8000], f["status"],
+                *headcount(form))
         with DB_LOCK, db() as c:
             if f["id"].isdigit():
                 cid = int(f["id"])
-                c.execute("UPDATE clients SET name=?, email=?, phone=?, family=?, notes=?, status=? WHERE id=?",
-                          (*vals, cid))
+                c.execute("""UPDATE clients SET name=?, email=?, phone=?, family=?, notes=?, status=?, adults=?, kids=?
+                             WHERE id=?""", (*vals, cid))
             else:
-                cid = c.execute("""INSERT INTO clients (name, email, phone, family, notes, status, created)
-                                   VALUES (?,?,?,?,?,?,?)""", (*vals, time.strftime("%Y-%m-%d"))).lastrowid
+                cid = c.execute("""INSERT INTO clients (name, email, phone, family, notes, status, adults, kids, created)
+                                   VALUES (?,?,?,?,?,?,?,?,?)""", (*vals, time.strftime("%Y-%m-%d"))).lastrowid
         self.redirect(f"/admin/clients/{cid}?done=client-saved")
 
     def client_names(self):
@@ -1587,8 +1630,8 @@ class Handler(BaseHTTPRequestHandler):
         <label>Your name<input name="name" autocomplete="name" required maxlength="120" value="{v('name')}"></label>
         <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200" value="{v('email')}"></label>
         <label>Phone <span class="opt">(optional)</span><input name="phone" type="tel" autocomplete="tel" maxlength="40" value="{v('phone')}"></label>
-        <label>Who's coming? <span class="opt">(and kids' ages)</span><input name="people" maxlength="120" value="{v('people')}"></label>
-        <label class="full">Anything Rachel should know? <span class="opt">(optional)</span><textarea name="notes" maxlength="2000">{v('notes')}</textarea></label>
+        {pickers(*headcount(form))}
+        <label class="full">Anything Rachel should know? <span class="opt">(kids' ages, pets, optional)</span><textarea name="notes" maxlength="2000">{v('notes')}</textarea></label>
         <div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
         <div class="full"><button class="btn" type="submit">Reserve my time</button></div>
       </form>"""
@@ -1625,7 +1668,9 @@ class Handler(BaseHTTPRequestHandler):
         if form.get("website"):
             return self.redirect(f"/minis/{slug}")
         data = {k: (form.get(k) or "").strip()[:n] for k, n in
-                {"slot": 5, "name": 120, "email": 200, "phone": 40, "people": 120, "notes": 2000}.items()}
+                {"slot": 5, "name": 120, "email": 200, "phone": 40, "notes": 2000}.items()}
+        adults, kids = headcount(form)
+        data["people"] = party(adults, kids)
         if data["slot"] not in mini_slots(ev):
             return self.mini_page(ev, "Please choose one of the open times.", form, 400)
         if not data["name"] or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", data["email"]):
@@ -1642,14 +1687,14 @@ class Handler(BaseHTTPRequestHandler):
                     cid = row["id"]
                     c.execute("UPDATE clients SET status='active' WHERE id=? AND status!='active'", (cid,))
                 else:
-                    cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status)
-                                       VALUES (?,?,?,?,?,?, 'active')""",
+                    cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status,
+                                       adults, kids) VALUES (?,?,?,?,'',?, 'active', ?, ?)""",
                                     (time.strftime("%Y-%m-%d"), data["name"], data["email"], data["phone"],
-                                     data["people"], f"Booked mini session: {ev['title']}")).lastrowid
+                                     f"Booked mini session: {ev['title']}", adults, kids)).lastrowid
                 c.execute("""INSERT INTO mini_bookings (created, event_id, slot, name, email, phone, people, notes,
-                             client_id, ref, ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                             client_id, ref, ip, adults, kids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (time.strftime("%Y-%m-%d %H:%M"), ev["id"], data["slot"], data["name"], data["email"],
-                           data["phone"], data["people"], data["notes"], cid, ref, ip))
+                           data["phone"], data["people"], data["notes"], cid, ref, ip, adults, kids))
         except sqlite3.IntegrityError:  # someone else just took that slot
             form["slot"] = ""
             return self.mini_page(ev, f"Sorry, {nice_time(data['slot'])} was just booked by someone else. Please pick another time.",
@@ -1722,7 +1767,7 @@ class Handler(BaseHTTPRequestHandler):
                    "end": end_of(r["slot"], r["slot_minutes"]), "summary": f"Mini: {r['name']}",
                    "location": r["location"],
                    "description": (f"{r['title']}\nEmail: {r['email']}\nPhone: {r['phone']}\n"
-                                   f"Who's coming: {r['people']}\nNotes: {r['notes']}\n{site}/admin/minis/{r['eid']}")}
+                                   f"Who's coming: {party_of(r)}\nNotes: {r['notes']}\n{site}/admin/minis/{r['eid']}")}
                   for r in rows]
         self.send(200, ics_calendar(events, f"{CFG['business']['name']} mini sessions"),
                   "text/calendar; charset=utf-8", {"Cache-Control": "no-cache"})
@@ -1800,21 +1845,24 @@ class Handler(BaseHTTPRequestHandler):
                 if bk:
                     who = (f'<a href="/admin/clients/{bk["client_id"]}"><strong>{esc(bk["name"])}</strong></a>'
                            if bk["client_id"] else f'<strong>{esc(bk["name"])}</strong>')
-                    info = (f'<a href="mailto:{esc(bk["email"])}">{esc(bk["email"])}</a> {esc(bk["phone"])}'
-                            f'{"<br>" + esc(bk["people"]) if bk["people"] else ""}'
-                            f'{snippet(bk["notes"], 200)}')
                     action = (f'<form method="post" action="/admin/minis/{ev["id"]}/cancel" '
                               f'data-confirm="Cancel {esc(bk["name"])}\'s {nice_time(t)} booking? The time opens up again.">'
                               f'<input type="hidden" name="booking" value="{bk["id"]}"><button class="link-btn">Cancel</button></form>')
+                    trs.append(f"""<tr>
+  <td class="nowrap"><strong>{nice_time(t)}</strong></td><td>{who}</td>
+  <td class="nowrap">{esc(party_of(bk))}</td>
+  <td><a href="mailto:{esc(bk['email'])}">{esc(bk['email'])}</a></td>
+  <td class="nowrap">{esc(bk['phone'])}</td>
+  <td>{esc(bk['notes'])}</td><td class="num">{action}</td></tr>""")
                 else:
-                    who, info, action = '<span class="muted">Open</span>', "", ""
-                trs.append(f'<tr><td><strong>{nice_time(t)}</strong></td><td>{who}</td><td>{info}</td><td>{action}</td></tr>')
+                    trs.append(f'<tr class="open-slot"><td class="nowrap"><strong>{nice_time(t)}</strong></td>'
+                               f'<td colspan="6">Open</td></tr>')
             slots_n = len(mini_slots(ev))
             extra = f"""
   <section>
     <div class="admin-head"><h2>Schedule <span class="muted">({len(booked)} of {slots_n} booked)</span></h2></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Family</th><th>Contact</th><th></th></tr></thead>
-    <tbody>{''.join(trs) or '<tr><td colspan="4" class="muted">No time slots. Check the start, end and length.</td></tr>'}</tbody></table></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Family</th><th>Who's coming</th><th>Email</th><th>Phone</th><th>Notes</th><th></th></tr></thead>
+    <tbody>{''.join(trs) or '<tr><td colspan="7" class="muted">No time slots. Check the start, end and length.</td></tr>'}</tbody></table></div>
   </section>
   <form method="post" action="/admin/minis/{ev['id']}/delete" class="mt-xl"
         data-confirm="Delete “{esc(ev['title'])}” and all its bookings? This can't be undone.">

@@ -54,6 +54,25 @@
     });
   }
 
+  // Number pickers (adults and kids): add minus and plus buttons around each number box
+  Array.prototype.forEach.call(document.querySelectorAll(".headcount input[type=number]"), function (input) {
+    var wrap = document.createElement("span"), name = input.labels && input.labels[0] ? input.labels[0].textContent.toLowerCase() : "";
+    wrap.className = "stepper";
+    input.parentNode.insertBefore(wrap, input);
+    function button(step, text, label) {
+      var b = document.createElement("button");
+      b.type = "button"; b.textContent = text; b.setAttribute("aria-label", label);
+      b.addEventListener("click", function () {
+        var v = (parseInt(input.value, 10) || 0) + step;
+        input.value = Math.max(Number(input.min) || 0, Math.min(Number(input.max) || 30, v));
+      });
+      return b;
+    }
+    wrap.appendChild(button(-1, "\u2212", "Fewer " + name));
+    wrap.appendChild(input);
+    wrap.appendChild(button(1, "+", "More " + name));
+  });
+
   // Book form: submit in place, fall back to a normal post on any error
   var form = document.getElementById("inquiry-form");
   if (form && window.fetch) {
