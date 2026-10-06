@@ -318,7 +318,14 @@ def version_photo_urls(page):
     def stamp(m):
         f = PHOTOS / m.group(2)
         return m.group(0) if not f.is_file() else f"{m.group(1)}{m.group(2)}?v={int(f.stat().st_mtime)}"
-    return re.sub(r"(/static/img/photos/)([\w.-]+\.(?:jpe?g|png|webp))(?![?\w.])", stamp, page)
+    page = re.sub(r"(/static/img/photos/)([\w.-]+\.(?:jpe?g|png|webp))(?![?\w.])", stamp, page)
+    return re.sub(r"/static/(css|js)/([\w.-]+\.(?:css|js))(?![?\w.])", version_asset, page)
+
+
+def version_asset(m):
+    """Same idea for stylesheets and scripts, so a site update shows without a hard refresh."""
+    f = STATIC / m.group(1) / m.group(2)
+    return m.group(0) if not f.is_file() else f"{m.group(0)}?v={int(f.stat().st_mtime)}"
 
 
 def portfolio_photos():
