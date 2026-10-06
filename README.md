@@ -63,9 +63,14 @@ Set at least:
 - `[business]` email, phone, Instagram/Facebook links (these appear across the whole site)
 - `[admin] password` to switch on the `/admin` inbox (username is `rachel`)
 - `[server] site_url` to the real address once the site is public
-- `[email]` (optional) to get an email for each booking request. With Gmail:
-  `smtp.gmail.com`, port 587, your Gmail address, and an
-  [app password](https://myaccount.google.com/apppasswords).
+- `[email]` (optional) so the site can send email: alerts for each booking
+  request, mini session confirmations, and the emails you send from the admin.
+  With Gmail: turn on 2-Step Verification, create an
+  [app password](https://myaccount.google.com/apppasswords), then set
+  `enabled = true`, `smtp.gmail.com`, port 587, your Gmail address as
+  `smtp_user` and `from_address`, and the app password as `smtp_password`.
+  Replies go to the `[business]` email. Restart, then use **Emails → Send me a
+  test email** in the admin.
 
 ## 4. The admin dashboard
 
@@ -96,6 +101,15 @@ shows new inquiries, recent galleries and shortcuts for common jobs.
   (one is suggested for you), an optional note and an expiry date. Drag photos
   onto the page to upload them. The page gives you a ready-to-send message with
   the link and code. Clients open galleries at `/gallery`.
+- **Emails:** send a client an email from the site. **Confirm booking** and
+  **Reply** on each inquiry, **Send email** on each client, **Email** next to
+  each mini session booking and **Email the client** on each gallery open a
+  ready-written message (booking confirmation, reply, session reminder, gallery
+  ready, thank you) with their name, session, date, place or gallery code
+  filled in. Edit it, then press Send. Sending a booking confirmation also marks
+  the inquiry Booked and adds them to your clients. Edit the starting text under
+  **Emails → Templates**; everything sent is listed there and on each client's
+  page. Until `[email]` is set up, Send opens your own email app instead.
 - **Site photos:** replace any photo on the site (hero, session cards, location
   pages, Rachel's portrait) and it updates everywhere at once. Add, remove and
   reorder portfolio photos; the first four also appear on the home page.

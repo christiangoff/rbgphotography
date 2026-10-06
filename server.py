@@ -58,6 +58,7 @@ MAX_UPLOAD = 60 * 1024 * 1024  # per photo
 ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("inquiries", "/admin/inquiries", "Inquiries"),
                   ("minis", "/admin/minis", "Mini sessions"), ("clients", "/admin/clients", "Clients"),
                   ("galleries", "/admin/galleries", "Galleries"),
+                  ("emails", "/admin/emails", "Emails"),
                   ("photos", "/admin/photos", "Site photos")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
@@ -67,12 +68,16 @@ ADMIN_ICONS = {
     "clients": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5c2.3 0 4 1.5 4.5 4"/>',
     "galleries": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="M3 17l5-4.5 4 3.5 3-2.5 6 4.5"/>',
     "photos": '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+    "emails": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3.5 6l8.5 7 8.5-7"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
            "photo-removed": "Photo removed.", "mini-saved": "Mini session saved.",
            "mini-deleted": "Mini session deleted.", "booking-cancelled": "Booking cancelled. That time is open again.",
-           "mini-invalid": "Please fill in the title, date, start and end times, and minutes per session.", "code-taken": "Another gallery already uses that code. Pick a different one."}
+           "mini-invalid": "Please fill in the title, date, start and end times, and minutes per session.", "code-taken": "Another gallery already uses that code. Pick a different one.",
+           "email-sent": "Email sent.", "booking-confirmed": "Confirmation sent. The inquiry is marked booked.",
+           "template-saved": "Template saved.", "test-sent": "Test email sent. Check the inbox.",
+           "test-failed": "The test email didn't go through. Check the [email] settings in config.ini."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner · wide, about 2000×1250",
     "og-image.jpg": "Preview when the site is shared · 1200×630",
@@ -170,6 +175,11 @@ with db() as _c:
         created TEXT NOT NULL, event_id INTEGER NOT NULL, slot TEXT NOT NULL,
         name TEXT, email TEXT, phone TEXT, people TEXT, notes TEXT,
         client_id INTEGER, status TEXT NOT NULL DEFAULT 'booked', ref TEXT, ip TEXT)""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS email_templates (
+        key TEXT PRIMARY KEY, name TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, sort INTEGER DEFAULT 0)""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS email_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, to_addr TEXT, subject TEXT, body TEXT,
+        kind TEXT, client_id INTEGER, inquiry_id INTEGER, status TEXT, error TEXT)""")
     # one live booking per slot, enforced by the database itself
     _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
@@ -594,16 +604,77 @@ def ics_calendar(events, name):
     return "\r\n".join(out) + "\r\n"
 
 
-def send_mail(subject, body, to, reply_to=""):
-    """Send an email if [email] is enabled in config.ini. Never raises."""
+# Starting points for emails Rachel sends from the admin. She can edit them under Emails.
+# Words in {braces} are filled in from the client, inquiry, booking or gallery.
+EMAIL_TEMPLATES = [
+    ("confirm", "Booking confirmation", "Your {session_type} is confirmed",
+     "Hi {first_name},\n\nThank you for booking with {business}! Your {session_type} is confirmed:\n\n"
+     "Date: {date}\nTime: {time}\nLocation: {location}\n\n"
+     "I'll send a few tips on what to wear and what to bring a week before. If anything changes, "
+     "just reply to this email.\n\nSee you soon!\n{photographer}\n{business}"),
+    ("reply", "Reply to an inquiry", "Your session with {business}",
+     "Hi {first_name},\n\nThank you so much for reaching out about a {session_type}! "
+     "I'd love to work with your family.\n\n\n\nTalk soon,\n{photographer}\n{business}"),
+    ("reminder", "Session reminder", "See you {date}!",
+     "Hi {first_name},\n\nJust a reminder that your {session_type} is coming up on {date} at {time}, "
+     "at {location}.\n\nPlease arrive a few minutes early. If the weather looks iffy, I'll reach out "
+     "the day before.\n\nSee you soon!\n{photographer}"),
+    ("gallery", "Gallery ready", "Your photos are ready!",
+     "Hi {first_name},\n\nYour photos are ready! Open {gallery_link} and enter the code {gallery_code} "
+     "to view and download them.\n\nIt was such a joy photographing your family.\n\n{photographer}\n{business}"),
+    ("thanks", "Thank you", "Thank you from {business}",
+     "Hi {first_name},\n\nThank you again for choosing {business}. If you loved your photos, a short review "
+     "would mean the world to me, and I'd be happy to photograph your family again anytime.\n\n{photographer}"),
+    ("message", "Blank message", "", "Hi {first_name},\n\n\n\n{photographer}\n{business}"),
+]
+with db() as _c:
+    _c.executemany("INSERT OR IGNORE INTO email_templates (key, name, subject, body, sort) VALUES (?,?,?,?,?)",
+                   [(*t, n) for n, t in enumerate(EMAIL_TEMPLATES)])
+
+
+def email_enabled():
     e = CFG["email"]
-    if e.get("enabled", "false").lower() != "true" or not to:
-        return
+    return e.get("enabled", "false").lower() == "true" and bool(e.get("smtp_host"))
+
+
+def fill_template(text, values):
+    """Replace {word} with values[word]; words with no value are left for Rachel to fill in."""
+    return re.sub(r"\{([a-z_]+)\}", lambda m: str(values[m.group(1)]) if values.get(m.group(1)) else m.group(0), text)
+
+
+def unfilled(text):
+    return sorted(set(re.findall(r"\{([a-z_]+)\}", text)))
+
+
+def send_mail(subject, body, to, reply_to="", log=None):
+    """Send an email if [email] is enabled in config.ini. Never raises.
+    Returns None when sent, otherwise a short reason. Pass log={kind, client_id, inquiry_id}
+    to record a client email in the admin's email history."""
+    e = CFG["email"]
+    error = None
+    if not to:
+        return "No email address."
+    if not email_enabled():
+        error = "Email sending is turned off in config.ini."
+    else:
+        error = _smtp_send(e, subject, body, to, reply_to)
+    if log is not None:
+        with DB_LOCK, db() as c:
+            c.execute("""INSERT INTO email_log (created, to_addr, subject, body, kind, client_id, inquiry_id, status, error)
+                         VALUES (?,?,?,?,?,?,?,?,?)""",
+                      (time.strftime("%Y-%m-%d %H:%M"), to, subject, body, log.get("kind", ""), log.get("client_id"),
+                       log.get("inquiry_id"), "failed" if error else "sent", error))
+    return error
+
+
+def _smtp_send(e, subject, body, to, reply_to):
     try:
         msg = EmailMessage()
         msg["Subject"] = subject
-        msg["From"] = e["from_address"] or e["smtp_user"]
+        msg["From"] = email.utils.formataddr((CFG["business"]["name"], e["from_address"] or e["smtp_user"]))
         msg["To"] = to
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        msg["Message-ID"] = email.utils.make_msgid(domain=(e["from_address"] or e["smtp_user"]).rpartition("@")[2] or None)
         if reply_to:
             msg["Reply-To"] = reply_to
         msg.set_content(body)
@@ -612,8 +683,35 @@ def send_mail(subject, body, to, reply_to=""):
             if e["smtp_user"]:
                 s.login(e["smtp_user"], e["smtp_password"])
             s.send_message(msg)
+        return None
     except Exception as exc:  # the booking is already saved; just log the failure
         print(f"email failed ({subject}): {exc}", file=sys.stderr)
+        return str(exc)[:300] or exc.__class__.__name__
+
+
+def client_for_inquiry(c, r):
+    """The client record for an inquiry, creating a lead from it when there isn't one yet."""
+    if r["client_id"]:
+        return r["client_id"]
+    existing = c.execute("SELECT id FROM clients WHERE lower(email)=lower(?) AND email!=''",
+                         (r["email"],)).fetchone()
+    if existing:
+        cid = existing["id"]
+    else:
+        note = "\n".join(x for x in [
+            f"From inquiry {r['created']}: {r['session_type']}",
+            f"Dates: {r['dates']}" if r["dates"] else "",
+            f"Location: {r['location']}" if r["location"] else "",
+            f"Heard about us: {r['heard']}" if r["heard"] else ""] if x)
+        counted = r["adults"] is not None
+        cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status, adults, kids)
+                           VALUES (?,?,?,?,?,?, 'lead', ?, ?)""",
+                        (time.strftime("%Y-%m-%d"), r["name"], r["email"], r["phone"],
+                         "" if counted else r["people"], note, r["adults"], r["kids"])).lastrowid
+    c.execute("UPDATE inquiries SET client_id=? WHERE id=?", (cid, r["id"]))
+    c.execute("UPDATE inquiries SET client_id=? WHERE client_id IS NULL AND lower(email)=lower(?)",
+              (cid, r["email"]))
+    return cid
 
 
 # --------------------------------------------------------------------------- request handler
@@ -961,6 +1059,10 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/admin/minis/(\d+)", p)
         if m:
             return self.admin_mini_form(int(m.group(1)), notice)
+        if p == "/admin/emails":
+            return self.admin_emails(q.get("edit", ""), notice)
+        if p == "/admin/email":
+            return self.admin_compose(q)
         self.not_found()
 
     def admin_post(self, p):
@@ -1002,6 +1104,15 @@ class Handler(BaseHTTPRequestHandler):
             if m.group(2) == "cancel":
                 return self.admin_mini_cancel(int(m.group(1)), form)
             return self.admin_mini_delete(int(m.group(1)))
+        if p == "/admin/email/send":
+            return self.admin_email_send(form)
+        if p == "/admin/emails/template":
+            return self.admin_template_save(form)
+        if p == "/admin/emails/test":
+            err = send_mail(f"Test email from {CFG['business']['name']}",
+                            "This is a test from your website. Email sending works!",
+                            CFG["email"]["notify_address"] or CFG["business"]["email"])
+            return self.redirect("/admin/emails?done=" + ("test-failed" if err else "test-sent"))
         self.not_found()
 
     # ---- admin: dashboard
@@ -1098,6 +1209,8 @@ class Handler(BaseHTTPRequestHandler):
       <label>Status <select name="status">{opts}</select></label> <button class="btn small">Save</button>
     </form>
     {client_btn}
+    <a class="btn small" href="/admin/email?inquiry={r['id']}&amp;template=confirm">Confirm booking</a>
+    <a class="btn ghost small" href="/admin/email?inquiry={r['id']}&amp;template=reply">Reply</a>
   </div>
 </article>""")
         body = f"""
@@ -1122,27 +1235,228 @@ class Handler(BaseHTTPRequestHandler):
             r = c.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,)).fetchone()
             if not r:
                 return self.not_found()
-            if r["client_id"]:
-                return self.redirect(f"/admin/clients/{r['client_id']}")
-            existing = c.execute("SELECT id FROM clients WHERE lower(email)=lower(?) AND email!=''",
-                                 (r["email"],)).fetchone()
-            if existing:
-                cid = existing["id"]
-            else:
-                note = "\n".join(x for x in [
-                    f"From inquiry {r['created']}: {r['session_type']}",
-                    f"Dates: {r['dates']}" if r["dates"] else "",
-                    f"Location: {r['location']}" if r["location"] else "",
-                    f"Heard about us: {r['heard']}" if r["heard"] else ""] if x)
-                counted = r["adults"] is not None
-                cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status, adults, kids)
-                                   VALUES (?,?,?,?,?,?, 'lead', ?, ?)""",
-                                (time.strftime("%Y-%m-%d"), r["name"], r["email"], r["phone"],
-                                 "" if counted else r["people"], note, r["adults"], r["kids"])).lastrowid
-            c.execute("UPDATE inquiries SET client_id=? WHERE id=?", (cid, inquiry_id))
-            c.execute("UPDATE inquiries SET client_id=? WHERE client_id IS NULL AND lower(email)=lower(?)",
-                      (cid, r["email"]))
+            cid = client_for_inquiry(c, r)
         self.redirect(f"/admin/clients/{cid}?done=client-saved")
+
+    # ---- admin: emails
+    CONTEXT_KEYS = ("inquiry", "client", "booking", "gallery")
+
+    def email_context(self, q):
+        """Who an email goes to and the values its template can use, from ?inquiry= / client= / booking= / gallery=."""
+        b = CFG["business"]
+        site = CFG["server"]["site_url"].rstrip("/")
+        ctx = {"to": "", "who": "", "client_id": None, "inquiry_id": None, "back": "/admin/clients", "hint": "",
+               "ids": {k: q[k] for k in self.CONTEXT_KEYS if (q.get(k) or "").strip()}}
+        v = {"photographer": b["photographer"], "business": b["name"], "business_email": b["email"],
+             "business_phone": b.get("phone", ""), "site": site, "gallery_link": f"{site}/gallery"}
+        with db() as c:
+            if q.get("inquiry", "").isdigit():
+                r = c.execute("SELECT * FROM inquiries WHERE id=?", (int(q["inquiry"]),)).fetchone()
+                if r:
+                    ctx.update(to=r["email"], who=r["name"], inquiry_id=r["id"], client_id=r["client_id"],
+                               back="/admin/inquiries")
+                    v.update(name=r["name"], session_type=(r["session_type"] or "session").lower(),
+                             location=r["location"])
+                    if r["dates"]:
+                        ctx["hint"] = f"They asked for: {r['dates']}"
+            if q.get("booking", "").isdigit():
+                r = c.execute("""SELECT b.*, e.title, e.date, e.location, e.id AS eid FROM mini_bookings b
+                                 JOIN mini_events e ON e.id=b.event_id WHERE b.id=?""", (int(q["booking"]),)).fetchone()
+                if r:
+                    ctx.update(to=r["email"], who=r["name"], client_id=r["client_id"], back=f"/admin/minis/{r['eid']}")
+                    v.update(name=r["name"], session_type="mini session", date=nice_date(r["date"]),
+                             time=nice_time(r["slot"]), location=r["location"])
+            if q.get("gallery"):
+                g = read_gallery(q["gallery"])
+                if g:
+                    ctx.update(client_id=ctx["client_id"] or g["client_id"], back=f"/admin/galleries/{g['slug']}")
+                    v.update(gallery_code=g["code"], gallery_title=g["title"])
+            cid = q.get("client", "")
+            if cid.isdigit() or ctx["client_id"]:
+                r = c.execute("SELECT * FROM clients WHERE id=?", (int(cid) if cid.isdigit() else ctx["client_id"],)).fetchone()
+                if r:
+                    ctx.update(client_id=r["id"], to=ctx["to"] or r["email"] or "", who=ctx["who"] or r["name"])
+                    v.setdefault("name", r["name"])
+                    if ctx["back"] == "/admin/clients":
+                        ctx["back"] = f"/admin/clients/{r['id']}"
+        name = v.get("name", "")
+        v["first_name"] = name if name.lower().startswith("the ") else name.split(" ")[0] if name else ""
+        # Rachel's own fill-ins on the compose page
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", q.get("date", "")):
+            v["date"] = nice_date(q["date"])
+        if re.fullmatch(r"\d{1,2}:\d{2}", q.get("time", "")):
+            v["time"] = nice_time(q["time"])
+        if q.get("location", "").strip():
+            v["location"] = q["location"].strip()[:200]
+        v.setdefault("session_type", "session")
+        ctx["values"] = v
+        return ctx
+
+    def email_templates(self):
+        with db() as c:
+            return c.execute("SELECT * FROM email_templates ORDER BY sort, name").fetchall()
+
+    def admin_compose(self, q, error="", subject=None, body=None, to=None):
+        ctx = self.email_context(q)
+        tpls = self.email_templates()
+        default = "confirm" if ctx["inquiry_id"] else "gallery" if q.get("gallery") else "message"
+        tpl = next((t for t in tpls if t["key"] == q.get("template")), None) or \
+            next(t for t in tpls if t["key"] == default)
+        v = ctx["values"]
+        subject = fill_template(tpl["subject"], v) if subject is None else subject
+        body = fill_template(tpl["body"], v) if body is None else body
+        to = ctx["to"] if to is None else to
+        ids = "".join(f'<input type="hidden" name="{k}" value="{esc(val)}">' for k, val in ctx["ids"].items())
+        uses = set(unfilled(tpl["subject"] + tpl["body"]))
+        fields = ""
+        if "date" in uses and "booking" not in ctx["ids"]:
+            fields += f'<label>Date<input type="date" name="date" value="{esc(q.get("date", ""))}"></label>'
+        if "time" in uses and "booking" not in ctx["ids"]:
+            fields += f'<label>Time<input type="time" name="time" value="{esc(q.get("time", ""))}"></label>'
+        if "location" in uses and "booking" not in ctx["ids"]:
+            fields += (f'<label class="full">Location<input name="location" maxlength="200" '
+                       f'value="{esc(q.get("location") or v.get("location") or "")}"></label>')
+        opts = "".join(f'<option value="{t["key"]}"{" selected" if t["key"] == tpl["key"] else ""}>{esc(t["name"])}</option>'
+                       for t in tpls)
+        left = unfilled(subject + body)
+        hint = f'<p class="muted small full">{esc(ctx["hint"])}</p>' if ctx["hint"] else ""
+        if email_enabled():
+            send = '<button class="btn">Send email</button>'
+            setup = ""
+        else:
+            mailto = f"mailto:{quote(to)}?subject={quote(subject)}&amp;body={quote(body)}"
+            send = f'<a class="btn" href="{mailto}">Open in my email app</a>'
+            setup = ('<p class="notice warn">The website can\'t send email yet, so this opens your own email app instead. '
+                     '<a href="/admin/emails">Turn on sending</a> to send straight from here.</p>')
+        err = f'<p class="form-error" role="alert">{esc(error)}</p>' if error else ""
+        title = f"Email {ctx['who']}" if ctx["who"] else "New email"
+        body_html = f"""
+  <div class="admin-head"><h1>{esc(title)}</h1></div>
+  {setup}{err}
+  <form method="get" action="/admin/email" class="form card-pad">
+    {ids}
+    <label class="full">Start from<select name="template" data-autosubmit>{opts}</select></label>
+    {fields}{hint}
+    <div class="full row-actions"><button class="btn ghost small">{'Fill in' if fields else 'Use this template'}</button></div>
+  </form>
+  <form method="post" action="/admin/email/send" class="form card-pad">
+    {ids}<input type="hidden" name="template" value="{tpl['key']}">
+    <label class="full">To<input name="to" type="email" required maxlength="200" value="{esc(to)}"></label>
+    <label class="full">Subject<input name="subject" required maxlength="200" value="{esc(subject)}"></label>
+    <label class="full">Message<textarea name="body" rows="14" required maxlength="20000">{esc(body)}</textarea></label>
+    {f'<p class="form-error full">Still to fill in: {esc(", ".join("{" + w + "}" for w in left))}. Use the fields above or type over them.</p>' if left else ''}
+    <div class="full row-actions">{send}<a class="btn ghost" href="{esc(ctx['back'])}">Cancel</a></div>
+    <p class="muted small full">Replies go to {esc(CFG['business']['email'])}.</p>
+  </form>"""
+        self.admin_page(body_html, title, "emails", crumbs=[("Emails", "/admin/emails"), (title, None)])
+
+    def admin_email_send(self, form):
+        q = {k: form[k] for k in (*self.CONTEXT_KEYS, "template") if form.get(k)}
+        to, subject, body = (form.get("to") or "").strip(), (form.get("subject") or "").strip(), form.get("body") or ""
+        if not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", to):
+            return self.admin_compose(q, "Please enter one valid email address.", subject, body, to)
+        if not subject or not body.strip():
+            return self.admin_compose(q, "Please add a subject and a message.", subject, body, to)
+        left = unfilled(subject + body)
+        if left:
+            return self.admin_compose(q, "Fill in " + ", ".join("{" + w + "}" for w in left) + " before sending.",
+                                      subject, body, to)
+        ctx = self.email_context(q)
+        kind = next((t["name"] for t in self.email_templates() if t["key"] == q.get("template")), "Message")
+        err = send_mail(subject[:200], body[:20000], to, CFG["business"]["email"],
+                        log={"kind": kind, "client_id": ctx["client_id"], "inquiry_id": ctx["inquiry_id"]})
+        if err:
+            return self.admin_compose(q, f"The email wasn't sent: {err}", subject, body, to)
+        done = "email-sent"
+        if q.get("template") == "confirm" and ctx["inquiry_id"]:
+            with DB_LOCK, db() as c:
+                r = c.execute("SELECT * FROM inquiries WHERE id=?", (ctx["inquiry_id"],)).fetchone()
+                cid = client_for_inquiry(c, r)
+                c.execute("UPDATE inquiries SET status='booked' WHERE id=?", (r["id"],))
+                c.execute("UPDATE clients SET status='active' WHERE id=? AND status='lead'", (cid,))
+                c.execute("UPDATE email_log SET client_id=? WHERE inquiry_id=? AND client_id IS NULL", (cid, r["id"]))
+            ctx["client_id"], done = cid, "booking-confirmed"
+        back = f"/admin/clients/{ctx['client_id']}" if ctx["client_id"] else ctx["back"]
+        self.redirect(f"{back}?done={done}")
+
+    def email_history(self, rows):
+        if not rows:
+            return '<p class="muted">No emails yet.</p>'
+        trs = "".join(f"""<tr>
+  <td class="nowrap">{esc(r['created'])}</td><td>{esc(r['to_addr'])}</td>
+  <td><details><summary>{esc(r['subject'])}</summary><pre class="email-body">{esc(r['body'])}</pre></details></td>
+  <td>{esc(r['kind'])}</td>
+  <td>{'<span class="tag ok">Sent</span>' if r['status'] == 'sent' else f'<span class="tag" title="{esc(r["error"])}">Not sent</span>'}</td>
+</tr>""" for r in rows)
+        return (f'<div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>To</th><th>Subject</th>'
+                f'<th>Type</th><th>Status</th></tr></thead><tbody>{trs}</tbody></table></div>')
+
+    def admin_emails(self, edit, notice):
+        e = CFG["email"]
+        tpls = self.email_templates()
+        with db() as c:
+            log = c.execute("SELECT * FROM email_log ORDER BY id DESC LIMIT 50").fetchall()
+        if email_enabled():
+            setup = f"""
+  <section class="card-pad">
+    <h2>Sending is on</h2>
+    <p>Emails go out from <strong>{esc(e['from_address'] or e['smtp_user'])}</strong>, and replies go to
+       <strong>{esc(CFG['business']['email'])}</strong>.</p>
+    <form method="post" action="/admin/emails/test"><button class="btn ghost small">Send me a test email</button></form>
+  </section>"""
+        else:
+            setup = """
+  <section class="card-pad">
+    <h2>Turn on sending</h2>
+    <p>Until this is set up, the Send button opens your own email app with the message ready to go.
+       To send straight from the website with a Gmail account:</p>
+    <ol>
+      <li>Turn on 2-Step Verification for the Google account, then create an app password at
+          <strong>myaccount.google.com/apppasswords</strong>.</li>
+      <li>In <code>config.ini</code>, under <code>[email]</code>, set <code>enabled = true</code>,
+          <code>smtp_host = smtp.gmail.com</code>, <code>smtp_port = 587</code>, <code>smtp_user</code> and
+          <code>from_address</code> to the Gmail address, and <code>smtp_password</code> to the app password.</li>
+      <li>Set <code>email</code> under <code>[business]</code> to the address replies should go to.</li>
+      <li>Restart the website, then come back here and send a test email.</li>
+    </ol>
+  </section>"""
+        editing = next((t for t in tpls if t["key"] == edit), None)
+        editor = ""
+        if editing:
+            editor = f"""
+  <form method="post" action="/admin/emails/template" class="form card-pad" id="edit">
+    <input type="hidden" name="key" value="{editing['key']}">
+    <h2 class="full">Edit “{esc(editing['name'])}”</h2>
+    <label class="full">Subject<input name="subject" maxlength="200" value="{esc(editing['subject'])}"></label>
+    <label class="full">Message<textarea name="body" rows="12" maxlength="20000">{esc(editing['body'])}</textarea></label>
+    <p class="muted small full">Words in braces are filled in for you: {{first_name}}, {{name}}, {{session_type}},
+       {{date}}, {{time}}, {{location}}, {{gallery_link}}, {{gallery_code}}, {{photographer}}, {{business}}.</p>
+    <div class="full row-actions"><button class="btn">Save template</button><a class="btn ghost" href="/admin/emails">Cancel</a></div>
+  </form>"""
+        rows = "".join(f'<tr><td><strong>{esc(t["name"])}</strong></td><td>{esc(t["subject"]) or "<span class=muted>—</span>"}</td>'
+                       f'<td class="num"><a href="/admin/emails?edit={t["key"]}#edit">Edit</a></td></tr>' for t in tpls)
+        body = f"""
+  <div class="admin-head"><h1>Emails</h1><a class="btn small" href="/admin/email">New email</a></div>
+  {setup}
+  {editor}
+  <section>
+    <div class="admin-head"><h2>Templates</h2></div>
+    <p class="muted">Starting points for the emails you send from Inquiries, Clients, Galleries and Mini sessions.</p>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Template</th><th>Subject</th><th></th></tr></thead>
+    <tbody>{rows}</tbody></table></div>
+  </section>
+  <section class="mt-xl">
+    <div class="admin-head"><h2>Recently sent</h2></div>
+    {self.email_history(log)}
+  </section>"""
+        self.admin_page(body, "Emails", "emails", notice)
+
+    def admin_template_save(self, form):
+        key = form.get("key", "")
+        with DB_LOCK, db() as c:
+            c.execute("UPDATE email_templates SET subject=?, body=? WHERE key=?",
+                      ((form.get("subject") or "").strip()[:200], (form.get("body") or "")[:20000], key))
+        self.redirect("/admin/emails?done=template-saved")
 
     # ---- admin: clients
     def admin_clients(self, search, status, notice):
@@ -1246,7 +1560,14 @@ class Handler(BaseHTTPRequestHandler):
   <form method="post" action="/admin/clients/{cid}/delete" data-confirm="Delete {esc(r['name'])} from your client list? Their galleries are kept.">
     <button class="btn ghost small danger">Delete client</button></form>"""
         title = r["name"] if r else "New client"
-        body = f'<div class="admin-head"><h1>{esc(title)}</h1></div>{form}{extra}'
+        email_btn = f'<a class="btn small" href="/admin/email?client={cid}">Send email</a>' if r else ""
+        if r:
+            with db() as c:
+                sent = c.execute("SELECT * FROM email_log WHERE client_id=? ORDER BY id DESC", (cid,)).fetchall()
+            extra = extra.replace('<form method="post" action="/admin/clients/',
+                                  f'<section class="mb"><div class="admin-head"><h2>Emails</h2></div>{self.email_history(sent)}</section>'
+                                  '<form method="post" action="/admin/clients/', 1)
+        body = f'<div class="admin-head"><h1>{esc(title)}</h1>{email_btn}</div>{form}{extra}'
         self.admin_page(body, title, "clients", notice, crumbs=[("Clients", "/admin/clients"), (title, None)])
 
     def admin_client_save(self, form):
@@ -1343,7 +1664,8 @@ class Handler(BaseHTTPRequestHandler):
     <p class="muted">{status}</p>
     <textarea readonly id="share-text" rows="3">{esc(share)}</textarea>
     <div class="row-actions"><button class="btn small" type="button" data-copy="share-text">Copy message</button>
-      <a class="btn ghost small" href="{mailto}">Open in email</a></div>
+      <a class="btn small" href="/admin/email?gallery={g['slug']}&amp;template=gallery">Email the client</a>
+      <a class="btn ghost small" href="{mailto}">Open in my email app</a></div>
   </section>
   <section>
     <div class="admin-head"><h2>Photos <span class="muted">({len(g['photos'])})</span></h2></div>
@@ -1720,7 +2042,7 @@ class Handler(BaseHTTPRequestHandler):
             f"Hi {data['name'].split()[0]},\n\nYou're booked for {ev['title']}.\n\nWhen: {when}\n"
             f"Where: {ev['location']}\n\nPlease arrive a few minutes early. If you need to change your time, "
             f"just reply to this email.\n\nSee you soon!\n{b['photographer']}\n{b['name']}",
-            data["email"], b["email"])).start()
+            data["email"], b["email"]), kwargs={"log": {"kind": "Mini session booked", "client_id": cid}}).start()
         cookie = f"mini_{ev['id']}={ref}; Path=/minis/{slug}; HttpOnly; SameSite=Lax; Max-Age={60 * 60 * 24 * 60}"
         self.redirect(f"/minis/{slug}/booked", {"Set-Cookie": cookie})
 
@@ -1855,6 +2177,8 @@ class Handler(BaseHTTPRequestHandler):
                     action = (f'<form method="post" action="/admin/minis/{ev["id"]}/cancel" '
                               f'data-confirm="Cancel {esc(bk["name"])}\'s {nice_time(t)} booking? The time opens up again.">'
                               f'<input type="hidden" name="booking" value="{bk["id"]}"><button class="link-btn">Cancel</button></form>')
+                    action = (f'<span class="row-actions"><a href="/admin/email?booking={bk["id"]}&amp;template=reminder">Email</a>'
+                              f'{action}</span>')
                     trs.append(f"""<tr>
   <td class="nowrap"><strong>{nice_time(t)}</strong></td><td>{who}</td>
   <td class="nowrap">{esc(party_of(bk))}</td>

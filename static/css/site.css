@@ -294,7 +294,7 @@ fieldset.headcount input { width: 4.2rem; margin: 0; text-align: center; padding
 .card-pad { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.5rem; }
 .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
 .row-actions form { margin: 0; }
-.inq .row-actions { justify-content: space-between; }
+.inq .row-actions > form.inline { margin-right: auto; }
 .search { display: flex; gap: .6rem; max-width: 520px; margin-bottom: .5rem; }
 .search input { margin: 0; }
 .table-wrap { overflow-x: auto; }
@@ -351,3 +351,13 @@ fieldset.slots legend { font: 500 .75rem/1.4 var(--sans); letter-spacing: .16em;
 .slot.taken span { background: #F1ECE4; color: #A8A49B; text-decoration: line-through; border-style: dashed; }
 .slot.taken input { cursor: not-allowed; }
 .slot small { display: block; font-size: .7rem; color: var(--muted); margin-top: .2rem; }
+
+/* Emails */
+.mb { margin-bottom: 2rem; }
+.notice.warn { background: #F7EDE2; color: #6B4A2E; }
+.notice.warn a { color: inherit; }
+table.data details summary { cursor: pointer; }
+pre.email-body { white-space: pre-wrap; font: 300 .92rem/1.55 var(--sans); background: var(--cream); padding: .9rem 1rem; border-radius: var(--radius); margin: .6rem 0 0; max-width: 60ch; }
+.card-pad ol { padding-left: 1.2rem; }
+.card-pad ol li { margin-bottom: .4rem; }
+.card-pad > h2:first-child { margin-top: 0; }

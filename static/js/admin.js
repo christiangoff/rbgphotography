@@ -24,6 +24,11 @@
     wrap.appendChild(button(1, "+", "More " + name));
   });
 
+  // Template picker on the email screen reloads with the chosen template
+  document.querySelectorAll("select[data-autosubmit]").forEach(function (sel) {
+    sel.addEventListener("change", function () { sel.form.submit(); });
+  });
+
   // Copy share text
   document.querySelectorAll("[data-copy]").forEach(function (b) {
     b.addEventListener("click", function () {
