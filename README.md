@@ -77,6 +77,18 @@ shows new inquiries, recent galleries and shortcuts for common jobs.
 - **Inquiries:** booking requests from the Book page. Mark each one New →
   Contacted → Booked → Archived, download them as a spreadsheet, or press
   **Add to clients** to turn one into a client record.
+- **Mini sessions:** set up a mini session day (date, place, start and end
+  time, minutes per family, break between families, price, details) and set it
+  to **Open**. Families pick a free time at `/minis` and it's theirs; nobody can
+  book the same slot twice. Each booking is added to the client list, shows on
+  the event's schedule (where you can cancel it to free the time), and is
+  emailed to you if email is set up. Families get a confirmation page with an
+  "Add to my calendar" button. Collect deposits as you do today (Venmo, invoice).
+  **Google Calendar:** the Mini sessions page has a private calendar link. In
+  Google Calendar choose Other calendars → + → From URL and paste it, and
+  bookings appear in your calendar automatically. Google can only reach that
+  link once the site is public; until then use "Download calendar file" and
+  import it.
 - **Clients:** your client list with search, a status (lead, active, past),
   family details and private notes. Each client page shows their inquiries and
   galleries and has a **New gallery** button.

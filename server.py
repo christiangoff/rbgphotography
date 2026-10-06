@@ -56,19 +56,23 @@ MAX_BODY = 32 * 1024
 MAX_UPLOAD = 60 * 1024 * 1024  # per photo
 
 ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("inquiries", "/admin/inquiries", "Inquiries"),
-                  ("clients", "/admin/clients", "Clients"), ("galleries", "/admin/galleries", "Galleries"),
+                  ("minis", "/admin/minis", "Mini sessions"), ("clients", "/admin/clients", "Clients"),
+                  ("galleries", "/admin/galleries", "Galleries"),
                   ("photos", "/admin/photos", "Site photos")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
     "inquiries": '<path d="M4 4h16v12H5.5L4 17.5z"/><path d="M8 9h8M8 12h5"/>',
+    "minis": '<rect x="3.5" y="5" width="17" height="15" rx="1.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h2M12 14h2M16 14h0.5M8 17h2"/>',
     "clients": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5c2.3 0 4 1.5 4.5 4"/>',
     "galleries": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="M3 17l5-4.5 4 3.5 3-2.5 6 4.5"/>',
     "photos": '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
-           "photo-removed": "Photo removed.", "code-taken": "Another gallery already uses that code. Pick a different one."}
+           "photo-removed": "Photo removed.", "mini-saved": "Mini session saved.",
+           "mini-deleted": "Mini session deleted.", "booking-cancelled": "Booking cancelled. That time is open again.",
+           "mini-invalid": "Please fill in the title, date, start and end times, and minutes per session.", "code-taken": "Another gallery already uses that code. Pick a different one."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner · wide, about 2000×1250",
     "og-image.jpg": "Preview when the site is shared · 1200×630",
@@ -155,6 +159,20 @@ with db() as _c:
         created TEXT NOT NULL,
         name TEXT NOT NULL, email TEXT, phone TEXT, family TEXT, notes TEXT,
         status TEXT NOT NULL DEFAULT 'active')""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS mini_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL,
+        date TEXT NOT NULL, location TEXT, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+        slot_minutes INTEGER NOT NULL DEFAULT 20, gap_minutes INTEGER NOT NULL DEFAULT 10,
+        price TEXT, details TEXT, status TEXT NOT NULL DEFAULT 'draft')""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS mini_bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created TEXT NOT NULL, event_id INTEGER NOT NULL, slot TEXT NOT NULL,
+        name TEXT, email TEXT, phone TEXT, people TEXT, notes TEXT,
+        client_id INTEGER, status TEXT NOT NULL DEFAULT 'booked', ref TEXT, ip TEXT)""")
+    # one live booking per slot, enforced by the database itself
+    _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
+                  ON mini_bookings(event_id, slot) WHERE status='booked'""")
     if "client_id" not in [r[1] for r in _c.execute("PRAGMA table_info(inquiries)")]:
         _c.execute("ALTER TABLE inquiries ADD COLUMN client_id INTEGER")
 
@@ -417,24 +435,132 @@ def find_gallery_by_code(code):
 # --------------------------------------------------------------------------- email
 
 def notify(inquiry):
+    send_mail(f"New session inquiry: {inquiry['name']} ({inquiry['session_type']})",
+              "\n".join(f"{k.replace('_', ' ').title()}: {v}" for k, v in inquiry.items()),
+              CFG["email"]["notify_address"] or CFG["business"]["email"], inquiry.get("email", ""))
+
+
+# --------------------------------------------------------------------------- mini sessions
+
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(os.environ.get("RBG_TIMEZONE", "America/New_York"))
+except Exception:  # no tz database: calendar times are left "floating" (local)
+    LOCAL_TZ = None
+
+MINI_STATUSES = ["draft", "open", "closed"]
+
+
+def mini_event(event_id=None, slug=None):
+    with db() as c:
+        if slug is not None:
+            return c.execute("SELECT * FROM mini_events WHERE slug=?", (slug,)).fetchone()
+        return c.execute("SELECT * FROM mini_events WHERE id=?", (event_id,)).fetchone()
+
+
+def mini_slots(ev):
+    """Start times ("HH:MM") for an event, from start to end in slot+gap steps."""
+    def mins(t):
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+    try:
+        start, end = mins(ev["start_time"]), mins(ev["end_time"])
+        length, gap = int(ev["slot_minutes"]), int(ev["gap_minutes"] or 0)
+    except (ValueError, TypeError, AttributeError):
+        return []
+    out, t = [], start
+    while length > 0 and t + length <= end and len(out) < 200:
+        out.append(f"{t // 60:02d}:{t % 60:02d}")
+        t += length + gap
+    return out
+
+
+def mini_booked(event_id):
+    with db() as c:
+        return {r["slot"]: r for r in c.execute(
+            "SELECT * FROM mini_bookings WHERE event_id=? AND status='booked'", (event_id,))}
+
+
+def nice_time(hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return f"{(h - 1) % 12 + 1}:{m:02d} {'am' if h < 12 else 'pm'}"
+
+
+def nice_date(iso):
+    try:
+        d = time.strptime(iso, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return iso or ""
+    return time.strftime("%A, %B ", d) + str(d.tm_mday) + time.strftime(", %Y", d)
+
+
+def end_of(hhmm, minutes):
+    h, m = map(int, hhmm.split(":"))
+    t = h * 60 + m + int(minutes)
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
+def calendar_token():
+    return hmac.new(SECRET, b"calendar-feed", hashlib.sha256).hexdigest()[:32]
+
+
+def ics_escape(s):
+    return str(s or "").replace("\\", "\\\\").replace(";", "\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_time(date, hhmm):
+    """UTC timestamp for a local date+time (floating local time if no tz database)."""
+    import datetime as _dt
+    local = _dt.datetime.strptime(f"{date} {hhmm}", "%Y-%m-%d %H:%M")
+    if LOCAL_TZ is None:
+        return local.strftime("%Y%m%dT%H%M%S")
+    return local.replace(tzinfo=LOCAL_TZ).astimezone(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def ics_calendar(events, name):
+    """events: dicts with uid, date, start, end, summary, location, description."""
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//RBG Photography//Website//EN",
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", f"X-WR-CALNAME:{ics_escape(name)}"]
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for e in events:
+        lines += ["BEGIN:VEVENT", f"UID:{e['uid']}", f"DTSTAMP:{stamp}",
+                  f"DTSTART:{ics_time(e['date'], e['start'])}", f"DTEND:{ics_time(e['date'], e['end'])}",
+                  f"SUMMARY:{ics_escape(e['summary'])}", f"LOCATION:{ics_escape(e['location'])}",
+                  f"DESCRIPTION:{ics_escape(e['description'])}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    # RFC 5545 wants lines folded at 75 octets
+    out = []
+    for line in lines:
+        while len(line.encode()) > 75:
+            cut = 74
+            while len(line[:cut].encode()) > 74:
+                cut -= 1
+            out.append(line[:cut])
+            line = " " + line[cut:]
+        out.append(line)
+    return "\r\n".join(out) + "\r\n"
+
+
+def send_mail(subject, body, to, reply_to=""):
+    """Send an email if [email] is enabled in config.ini. Never raises."""
     e = CFG["email"]
-    if e.get("enabled", "false").lower() != "true":
+    if e.get("enabled", "false").lower() != "true" or not to:
         return
     try:
         msg = EmailMessage()
-        msg["Subject"] = f"New session inquiry: {inquiry['name']} ({inquiry['session_type']})"
+        msg["Subject"] = subject
         msg["From"] = e["from_address"] or e["smtp_user"]
-        msg["To"] = e["notify_address"] or CFG["business"]["email"]
-        if inquiry["email"]:
-            msg["Reply-To"] = inquiry["email"]
-        msg.set_content("\n".join(f"{k.replace('_', ' ').title()}: {v}" for k, v in inquiry.items()))
+        msg["To"] = to
+        if reply_to:
+            msg["Reply-To"] = reply_to
+        msg.set_content(body)
         with smtplib.SMTP(e["smtp_host"], int(e["smtp_port"]), timeout=20) as s:
             s.starttls()
             if e["smtp_user"]:
                 s.login(e["smtp_user"], e["smtp_password"])
             s.send_message(msg)
-    except Exception as exc:  # the inquiry is already saved; just log the failure
-        print(f"email notification failed: {exc}", file=sys.stderr)
+    except Exception as exc:  # the booking is already saved; just log the failure
+        print(f"email failed ({subject}): {exc}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- request handler
@@ -538,6 +664,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.admin_get(p)
             if p == "/gallery" or p.startswith("/gallery/"):
                 return self.gallery_get(p)
+            if p == "/minis" or p.startswith("/minis/"):
+                return self.minis_get(p)
+            m = re.fullmatch(r"/calendar/([0-9a-f]{32})\.ics", p)
+            if m:
+                return self.calendar_feed(m.group(1))
             return self.serve_page(p)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -555,6 +686,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.inquiry_post()
             if p == "/gallery":
                 return self.gallery_login()
+            m = re.fullmatch(r"/minis/([a-z0-9-]+)/book", p)
+            if m:
+                return self.mini_book(m.group(1))
             if p.startswith("/admin/"):
                 return self.admin_post(p)
             self.send(405, "Method not allowed", "text/plain")
@@ -614,7 +748,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def robots(self):
         url = CFG["server"]["site_url"].rstrip("/")
-        body = f"User-agent: *\nDisallow: /admin\nDisallow: /gallery/\nDisallow: /api/\n\nSitemap: {url}/sitemap.xml\n"
+        body = f"User-agent: *\nDisallow: /admin\nDisallow: /gallery/\nDisallow: /api/\nDisallow: /calendar/\n\nSitemap: {url}/sitemap.xml\n"
         self.send(200, body, "text/plain; charset=utf-8")
 
     def sitemap(self):
@@ -629,6 +763,7 @@ class Handler(BaseHTTPRequestHandler):
             path = "/" if rel == "index" else "/" + rel
             mod = time.strftime("%Y-%m-%d", time.gmtime(f.stat().st_mtime))
             locs.append(f"<url><loc>{esc(url + path)}</loc><lastmod>{mod}</lastmod></url>")
+        locs.append(f"<url><loc>{esc(url)}/minis</loc></url>")
         body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
                 + "\n".join(locs) + "\n</urlset>\n")
@@ -764,6 +899,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_file(g["folder"], m.group(3))
         if p == "/admin/photos":
             return self.admin_photos(notice)
+        if p == "/admin/minis":
+            return self.admin_minis(notice)
+        if p == "/admin/minis/new":
+            return self.admin_mini_form(None, notice)
+        m = re.fullmatch(r"/admin/minis/(\d+)", p)
+        if m:
+            return self.admin_mini_form(int(m.group(1)), notice)
         self.not_found()
 
     def admin_post(self, p):
@@ -798,6 +940,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_photo_delete(form.get("name", ""))
         if p == "/admin/photos/move":
             return self.admin_photo_move(form.get("name", ""), form.get("dir", ""))
+        if p == "/admin/minis/save":
+            return self.admin_mini_save(form)
+        m = re.fullmatch(r"/admin/minis/(\d+)/(cancel|delete)", p)
+        if m:
+            if m.group(2) == "cancel":
+                return self.admin_mini_cancel(int(m.group(1)), form)
+            return self.admin_mini_delete(int(m.group(1)))
         self.not_found()
 
     # ---- admin: dashboard
@@ -827,16 +976,26 @@ class Handler(BaseHTTPRequestHandler):
             f'<li><a href="/admin/galleries/{g["slug"]}"><strong>{esc(g["title"])}</strong></a> '
             f'<span class="muted">· {esc(names.get(g["client_id"], "No client"))} · {len(g["photos"])} photos</span></li>'
             for g in gals[:5]) or '<li class="muted">No galleries yet.</li>'
+        with db() as c:
+            upcoming = c.execute("""SELECT b.name, b.slot, e.date, e.title, e.id AS eid FROM mini_bookings b
+                                    JOIN mini_events e ON e.id=b.event_id WHERE b.status='booked' AND e.date>=?
+                                    ORDER BY e.date, b.slot LIMIT 6""", (time.strftime("%Y-%m-%d"),)).fetchall()
+        minis = "".join(
+            f'<li><a href="/admin/minis/{r["eid"]}"><strong>{esc(r["name"])}</strong></a> '
+            f'<span class="muted">· {esc(nice_date(r["date"]).rsplit(",", 1)[0])}, {nice_time(r["slot"])}</span></li>'
+            for r in upcoming) or '<li class="muted">No upcoming mini session bookings.</li>'
         body = f"""
   <div class="admin-head"><h1>Hello, {esc(CFG["business"]["photographer"].split()[0])}</h1></div>
   <div class="stats">{stats}</div>
   <div class="quick">
     <a class="btn small" href="/admin/galleries/new">New gallery</a>
+    <a class="btn ghost small" href="/admin/minis/new">New mini session</a>
     <a class="btn ghost small" href="/admin/clients/new">Add client</a>
     <a class="btn ghost small" href="/admin/photos">Update site photos</a>
   </div>
   <div class="admin-cols">
     <section class="card-pad"><div class="admin-head"><h2>New inquiries</h2><a href="/admin/inquiries">See all</a></div><ul class="plain">{inbox}</ul></section>
+    <section class="card-pad"><div class="admin-head"><h2>Upcoming minis</h2><a href="/admin/minis">See all</a></div><ul class="plain">{minis}</ul></section>
     <section class="card-pad"><div class="admin-head"><h2>Recent galleries</h2><a href="/admin/galleries">See all</a></div><ul class="plain">{recent}</ul></section>
   </div>"""
         self.admin_page(body, "Dashboard", "dashboard", notice)
@@ -975,7 +1134,7 @@ class Handler(BaseHTTPRequestHandler):
         self.admin_page(body, "Clients", "clients", notice)
 
     def admin_client_form(self, cid, notice):
-        r, inquiries, galleries = None, [], []
+        r, inquiries, galleries, minis = None, [], [], []
         if cid is not None:
             with db() as c:
                 r = c.execute("SELECT * FROM clients WHERE id=?", (cid,)).fetchone()
@@ -984,6 +1143,9 @@ class Handler(BaseHTTPRequestHandler):
                 inquiries = c.execute("""SELECT * FROM inquiries WHERE client_id=? OR
                                          (email!='' AND lower(email)=lower(?)) ORDER BY id DESC""",
                                       (cid, r["email"] or "")).fetchall()
+                minis = c.execute("""SELECT b.slot, b.status, e.title, e.date, e.id AS eid FROM mini_bookings b
+                                     JOIN mini_events e ON e.id=b.event_id WHERE b.client_id=? ORDER BY e.date DESC""",
+                                  (cid,)).fetchall()
             galleries = [g for g in all_galleries() if g["client_id"] == cid]
         v = (lambda k: esc(r[k]) if r else "")
         opts = "".join(f'<option value="{s}"{" selected" if r and r["status"] == s else ""}>{s.title()}</option>'
@@ -1010,11 +1172,15 @@ class Handler(BaseHTTPRequestHandler):
                 f'<li>{esc(i["created"])} · {esc(i["session_type"])} <span class="tag">{esc(i["status"])}</span>'
                 f'{snippet(i["message"])}</li>'
                 for i in inquiries) or '<li class="muted">No inquiries.</li>'
+            inq_rows += "".join(
+                f'<li><a href="/admin/minis/{b["eid"]}">{esc(b["title"])}</a> · {esc(nice_date(b["date"]))}, '
+                f'{nice_time(b["slot"])}{" <span class=tag>cancelled</span>" if b["status"] != "booked" else ""}</li>'
+                for b in minis)
             extra = f"""
   <div class="admin-cols">
     <section><div class="admin-head"><h2>Galleries</h2>
       <a class="btn small" href="/admin/galleries/new?client={cid}">New gallery</a></div><ul class="plain">{gal_rows}</ul></section>
-    <section><h2>Inquiries</h2><ul class="plain">{inq_rows}</ul></section>
+    <section><h2>Inquiries &amp; bookings</h2><ul class="plain">{inq_rows}</ul></section>
   </div>
   <form method="post" action="/admin/clients/{cid}/delete" data-confirm="Delete {esc(r['name'])} from your client list? Their galleries are kept.">
     <button class="btn ghost small danger">Delete client</button></form>"""
@@ -1330,6 +1496,362 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if tmp.exists():
                 tmp.unlink()
+
+    # ---- mini sessions (public)
+    def minis_get(self, p):
+        today = time.strftime("%Y-%m-%d")
+        if p == "/minis":
+            with db() as c:
+                events = c.execute("""SELECT * FROM mini_events WHERE status='open' AND date>=?
+                                      ORDER BY date, start_time""", (today,)).fetchall()
+            cards = []
+            for ev in events:
+                slots = mini_slots(ev)
+                left = len(slots) - len(mini_booked(ev["id"]))
+                avail = (f'{left} of {len(slots)} spots open' if left > 0 else 'Fully booked')
+                cards.append(f"""
+      <a class="card mini-card" href="/minis/{esc(ev['slug'])}">
+        <div class="card-body">
+          <p class="eyebrow">{esc(nice_date(ev['date']))}</p>
+          <h3>{esc(ev['title'])}</h3>
+          <p class="price">{esc(ev['price'])}</p>
+          <p>{esc(ev['location'])}<br><span class="muted">{nice_time(ev['start_time'])} to {nice_time(ev['end_time'])}</span></p>
+          <span class="btn{' ghost' if left <= 0 else ''}">{'See times' if left > 0 else avail}</span>
+          {f'<p class="muted small mt-s">{avail}</p>' if left > 0 else ''}
+        </div>
+      </a>""")
+            listing = (f'<div class="cards">{"".join(cards)}</div>' if cards else
+                       '<div class="aside-box"><h3>No mini sessions open right now</h3>'
+                       '<p>New dates are announced on Instagram and by email. Want a heads-up? '
+                       '<a href="/book?session=Mini+session">Join the list</a> and Rachel will let you know.</p></div>')
+            body = f"""
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Mini sessions</p>
+      <h1>Pick your <em>mini session</em> time</h1>
+      <p class="lede">Short, sweet sessions on set dates and locations. Choose an open time below and it's yours.</p>
+    </div>
+    {listing}
+  </div>
+</section>"""
+            return self.page(body, "Mini Sessions",
+                             "Book a family mini session with RBG Photography in Woodstock, Ellicott City and nearby Maryland towns.")
+        m = re.fullmatch(r"/minis/([a-z0-9-]+)(/booked)?", p)
+        ev = mini_event(slug=m.group(1)) if m else None
+        if not ev or ev["status"] == "draft":
+            return self.not_found()
+        if m.group(2):
+            return self.mini_confirmation(ev)
+        if self.query().get("ics") == "1":
+            return self.mini_client_ics(ev)
+        self.mini_page(ev)
+
+    def mini_page(self, ev, error="", form=None, status=200):
+        form = form or {}
+        booked = mini_booked(ev["id"])
+        slots = mini_slots(ev)
+        is_open = ev["status"] == "open" and ev["date"] >= time.strftime("%Y-%m-%d")
+        chosen = form.get("slot", "")
+        buttons = "".join(
+            f'<label class="slot{" taken" if t in booked else ""}">'
+            f'<input type="radio" name="slot" value="{t}" required{" disabled" if t in booked or not is_open else ""}'
+            f'{" checked" if t == chosen and t not in booked else ""}>'
+            f'<span>{nice_time(t)}</span>{"<small>Booked</small>" if t in booked else ""}</label>'
+            for t in slots)
+        left = len(slots) - len(booked)
+        v = (lambda k: esc(form.get(k, "")))
+        if not is_open:
+            book = '<div class="aside-box"><h3>Booking is closed</h3><p>This mini session is no longer taking bookings.</p></div>'
+        elif left <= 0:
+            book = ('<div class="aside-box"><h3>All spots are taken</h3><p>Join the waitlist and Rachel will let you know '
+                    'if a time opens up.</p><a class="btn" href="/book?session=Mini+session">Join the waitlist</a></div>')
+        else:
+            err = f'<p class="form-error full" role="alert">{esc(error)}</p>' if error else ""
+            book = f"""
+      <form class="form" method="post" action="/minis/{esc(ev['slug'])}/book">
+        {err}
+        <fieldset class="full slots"><legend>Choose a time <span class="opt">({left} open)</span></legend>{buttons}</fieldset>
+        <label>Your name<input name="name" autocomplete="name" required maxlength="120" value="{v('name')}"></label>
+        <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200" value="{v('email')}"></label>
+        <label>Phone <span class="opt">(optional)</span><input name="phone" type="tel" autocomplete="tel" maxlength="40" value="{v('phone')}"></label>
+        <label>Who's coming? <span class="opt">(and kids' ages)</span><input name="people" maxlength="120" value="{v('people')}"></label>
+        <label class="full">Anything Rachel should know? <span class="opt">(optional)</span><textarea name="notes" maxlength="2000">{v('notes')}</textarea></label>
+        <div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
+        <div class="full"><button class="btn" type="submit">Reserve my time</button></div>
+      </form>"""
+        details = esc(ev["details"]).replace("\n", "<br>") if ev["details"] else ""
+        body = f"""
+<section class="section">
+  <div class="wrap">
+    <p class="crumbs-public"><a href="/minis">All mini sessions</a></p>
+    <div class="book-grid">
+      <div>
+        <p class="eyebrow">{esc(nice_date(ev['date']))}</p>
+        <h1>{esc(ev['title'])}</h1>
+        {book}
+      </div>
+      <aside class="aside-box">
+        <h3>The details</h3>
+        <p><strong>When:</strong> {esc(nice_date(ev['date']))}, {nice_time(ev['start_time'])} to {nice_time(ev['end_time'])}<br>
+           <strong>Where:</strong> {esc(ev['location'])}<br>
+           <strong>Length:</strong> {int(ev['slot_minutes'])} minutes<br>
+           {f"<strong>Price:</strong> {esc(ev['price'])}" if ev['price'] else ''}</p>
+        {f'<p>{details}</p>' if details else ''}
+        <p class="muted small">Questions? Email <a href="mailto:{{{{email}}}}">{{{{email}}}}</a>.</p>
+      </aside>
+    </div>
+  </div>
+</section>"""
+        self.page(body, ev["title"], f"Mini session on {nice_date(ev['date'])} at {ev['location']}.", status=status)
+
+    def mini_book(self, slug):
+        ev = mini_event(slug=slug)
+        if not ev or ev["status"] != "open" or ev["date"] < time.strftime("%Y-%m-%d"):
+            return self.not_found()
+        form = self.read_form() or {}
+        if form.get("website"):
+            return self.redirect(f"/minis/{slug}")
+        data = {k: (form.get(k) or "").strip()[:n] for k, n in
+                {"slot": 5, "name": 120, "email": 200, "phone": 40, "people": 120, "notes": 2000}.items()}
+        if data["slot"] not in mini_slots(ev):
+            return self.mini_page(ev, "Please choose one of the open times.", form, 400)
+        if not data["name"] or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", data["email"]):
+            return self.mini_page(ev, "Please include your name and a valid email address.", form, 400)
+        ip = self.client_ip()
+        if not INQUIRY_LIMIT.allow(ip):
+            return self.mini_page(ev, "We've received several requests from you already. Rachel will be in touch.", form, 429)
+        ref = secrets.token_urlsafe(9)
+        try:
+            with DB_LOCK, db() as c:
+                row = c.execute("SELECT id FROM clients WHERE email!='' AND lower(email)=lower(?)",
+                                (data["email"],)).fetchone()
+                if row:
+                    cid = row["id"]
+                    c.execute("UPDATE clients SET status='active' WHERE id=? AND status!='active'", (cid,))
+                else:
+                    cid = c.execute("""INSERT INTO clients (created, name, email, phone, family, notes, status)
+                                       VALUES (?,?,?,?,?,?, 'active')""",
+                                    (time.strftime("%Y-%m-%d"), data["name"], data["email"], data["phone"],
+                                     data["people"], f"Booked mini session: {ev['title']}")).lastrowid
+                c.execute("""INSERT INTO mini_bookings (created, event_id, slot, name, email, phone, people, notes,
+                             client_id, ref, ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                          (time.strftime("%Y-%m-%d %H:%M"), ev["id"], data["slot"], data["name"], data["email"],
+                           data["phone"], data["people"], data["notes"], cid, ref, ip))
+        except sqlite3.IntegrityError:  # someone else just took that slot
+            form["slot"] = ""
+            return self.mini_page(ev, f"Sorry, {nice_time(data['slot'])} was just booked by someone else. Please pick another time.",
+                                  form, 409)
+        when = f"{nice_date(ev['date'])} at {nice_time(data['slot'])}"
+        site = CFG["server"]["site_url"].rstrip("/")
+        b = CFG["business"]
+        threading.Thread(target=send_mail, daemon=True, args=(
+            f"Mini session booked: {data['name']}, {when}",
+            f"{data['name']} booked {ev['title']}.\n\nWhen: {when}\nWhere: {ev['location']}\n"
+            f"Email: {data['email']}\nPhone: {data['phone']}\nWho's coming: {data['people']}\nNotes: {data['notes']}\n\n"
+            f"Manage it at {site}/admin/minis/{ev['id']}",
+            CFG["email"]["notify_address"] or b["email"], data["email"])).start()
+        threading.Thread(target=send_mail, daemon=True, args=(
+            f"You're booked: {ev['title']}",
+            f"Hi {data['name'].split()[0]},\n\nYou're booked for {ev['title']}.\n\nWhen: {when}\n"
+            f"Where: {ev['location']}\n\nPlease arrive a few minutes early. If you need to change your time, "
+            f"just reply to this email.\n\nSee you soon!\n{b['photographer']}\n{b['name']}",
+            data["email"], b["email"])).start()
+        cookie = f"mini_{ev['id']}={ref}; Path=/minis/{slug}; HttpOnly; SameSite=Lax; Max-Age={60 * 60 * 24 * 60}"
+        self.redirect(f"/minis/{slug}/booked", {"Set-Cookie": cookie})
+
+    def my_mini_booking(self, ev):
+        ref = self.cookies().get(f"mini_{ev['id']}", "")
+        if not ref:
+            return None
+        with db() as c:
+            return c.execute("SELECT * FROM mini_bookings WHERE event_id=? AND ref=? AND status='booked'",
+                             (ev["id"], ref)).fetchone()
+
+    def mini_confirmation(self, ev):
+        bk = self.my_mini_booking(ev)
+        if not bk:
+            return self.redirect(f"/minis/{ev['slug']}")
+        body = f"""
+<section class="narrow center">
+  <p class="eyebrow">You're booked</p>
+  <h1>See you {esc(nice_date(ev['date']).split(',')[0])}!</h1>
+  <p class="lede">{esc(bk['name'])}, your {esc(ev['title'])} time is <strong>{nice_time(bk['slot'])}</strong> on
+     {esc(nice_date(ev['date']))} at {esc(ev['location'])}.</p>
+  <p>Rachel will be in touch with details and what to wear. Need to change something? Email
+     <a href="mailto:{{{{email}}}}">{{{{email}}}}</a>.</p>
+  <p class="actions centered"><a class="btn" href="/minis/{esc(ev['slug'])}?ics=1">Add to my calendar</a>
+     <a class="btn ghost" href="/portfolio">Browse the portfolio</a></p>
+</section>"""
+        self.page(body, "You're booked", noindex=True)
+
+    def mini_client_ics(self, ev):
+        bk = self.my_mini_booking(ev)
+        if not bk:
+            return self.redirect(f"/minis/{ev['slug']}")
+        b = CFG["business"]
+        body = ics_calendar([{
+            "uid": f"mini-{bk['id']}@rbg", "date": ev["date"], "start": bk["slot"],
+            "end": end_of(bk["slot"], ev["slot_minutes"]), "summary": f"{ev['title']} with {b['name']}",
+            "location": ev["location"], "description": f"Questions? {b['email']}"}], b["name"])
+        self.send(200, body, "text/calendar; charset=utf-8",
+                  {"Content-Disposition": 'attachment; filename="mini-session.ics"', "Cache-Control": "no-store"})
+
+    def calendar_feed(self, token):
+        """Every booked mini session slot, for Rachel to subscribe to in Google Calendar."""
+        if not hmac.compare_digest(token, calendar_token()):
+            return self.not_found()
+        with db() as c:
+            rows = c.execute("""SELECT b.*, e.title, e.date, e.location, e.slot_minutes, e.id AS eid
+                                FROM mini_bookings b JOIN mini_events e ON e.id=b.event_id
+                                WHERE b.status='booked' ORDER BY e.date, b.slot""").fetchall()
+        site = CFG["server"]["site_url"].rstrip("/")
+        events = [{"uid": f"mini-{r['id']}@rbg", "date": r["date"], "start": r["slot"],
+                   "end": end_of(r["slot"], r["slot_minutes"]), "summary": f"Mini: {r['name']}",
+                   "location": r["location"],
+                   "description": (f"{r['title']}\nEmail: {r['email']}\nPhone: {r['phone']}\n"
+                                   f"Who's coming: {r['people']}\nNotes: {r['notes']}\n{site}/admin/minis/{r['eid']}")}
+                  for r in rows]
+        self.send(200, ics_calendar(events, f"{CFG['business']['name']} mini sessions"),
+                  "text/calendar; charset=utf-8", {"Cache-Control": "no-cache"})
+
+    # ---- mini sessions (admin)
+    def admin_minis(self, notice):
+        with db() as c:
+            events = c.execute("SELECT * FROM mini_events ORDER BY date DESC, start_time").fetchall()
+        today = time.strftime("%Y-%m-%d")
+        rows = []
+        for ev in events:
+            slots, booked = mini_slots(ev), mini_booked(ev["id"])
+            state = "Past" if ev["date"] < today else ev["status"].title()
+            cls = "ok" if state == "Open" else ""
+            rows.append(f"""<tr>
+  <td><a href="/admin/minis/{ev['id']}"><strong>{esc(ev['title'])}</strong></a><br><span class="muted">{esc(ev['location'])}</span></td>
+  <td>{esc(nice_date(ev['date']))}<br><span class="muted">{nice_time(ev['start_time'])} to {nice_time(ev['end_time'])}</span></td>
+  <td>{len(booked)} of {len(slots)}</td>
+  <td><span class="tag {cls}">{state}</span></td>
+</tr>""")
+        table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Event</th><th>Date</th><th>Booked</th>'
+                 f'<th>Status</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+                 if rows else '<p class="muted">No mini sessions yet. Create one to start taking bookings.</p>')
+        site = CFG["server"]["site_url"].rstrip("/")
+        feed = f"{site}/calendar/{calendar_token()}.ics"
+        body = f"""
+  <div class="admin-head"><h1>Mini sessions</h1><a class="btn small" href="/admin/minis/new">New mini session</a></div>
+  <p class="muted">Open events are listed for families at <a href="/minis" target="_blank" rel="noopener">{esc(site)}/minis</a>.</p>
+  {table}
+  <section class="card-pad mt-xl">
+    <h2>See bookings in Google Calendar</h2>
+    <p>In Google Calendar choose <strong>Other calendars → + → From URL</strong> and paste this private link.
+       New bookings then appear in your calendar automatically (Google checks every few hours).</p>
+    <textarea readonly id="feed-url" rows="2">{esc(feed)}</textarea>
+    <div class="row-actions"><button class="btn small" type="button" data-copy="feed-url">Copy link</button>
+      <a class="btn ghost small" href="/calendar/{calendar_token()}.ics">Download calendar file</a></div>
+    <p class="muted small mt">Google can only reach this link once the site is public on the internet. Until then,
+       download the calendar file and import it in Google Calendar under <strong>Settings → Import</strong>.</p>
+  </section>"""
+        self.admin_page(body, "Mini sessions", "minis", notice)
+
+    def admin_mini_form(self, event_id, notice):
+        ev = None
+        if event_id is not None:
+            ev = mini_event(event_id)
+            if not ev:
+                return self.not_found()
+        v = (lambda k, d="": esc(ev[k]) if ev else esc(d))
+        opts = "".join(f'<option value="{s}"{" selected" if (ev["status"] if ev else "open") == s else ""}>'
+                       f'{ {"draft": "Draft (hidden)", "open": "Open for booking", "closed": "Closed"}[s] }</option>'
+                       for s in MINI_STATUSES)
+        form = f"""
+  <form method="post" action="/admin/minis/save" class="form card-pad">
+    <input type="hidden" name="id" value="{ev['id'] if ev else ''}">
+    <label class="full">Title<input name="title" required maxlength="120" value="{v('title', 'Fall Mini Sessions')}"></label>
+    <label>Date<input name="date" type="date" required value="{v('date')}"></label>
+    <label>Status<select name="status">{opts}</select></label>
+    <label class="full">Location<input name="location" maxlength="200" value="{v('location')}" placeholder="Patapsco Valley State Park, Avalon area"></label>
+    <label>First slot starts<input name="start_time" type="time" required value="{v('start_time', '09:00')}"></label>
+    <label>Last slot ends by<input name="end_time" type="time" required value="{v('end_time', '12:00')}"></label>
+    <label>Minutes per session<input name="slot_minutes" type="number" min="5" max="240" required value="{v('slot_minutes', '20')}"></label>
+    <label>Break between sessions <span class="opt">(minutes)</span><input name="gap_minutes" type="number" min="0" max="120" value="{v('gap_minutes', '10')}"></label>
+    <label>Price<input name="price" maxlength="60" value="{v('price', '$225')}"></label>
+    <label class="full">Details for families <span class="opt">(what's included, deposit, what to wear)</span><textarea name="details" maxlength="3000">{v('details')}</textarea></label>
+    <div class="full row-actions"><button class="btn">{'Save changes' if ev else 'Create mini session'}</button>
+      <a class="btn ghost" href="/admin/minis">Back to mini sessions</a>
+      {f'<a href="/minis/{esc(ev["slug"])}" target="_blank" rel="noopener">View booking page ↗</a>' if ev and ev['status'] != 'draft' else ''}</div>
+  </form>"""
+        extra = ""
+        if ev:
+            booked = mini_booked(ev["id"])
+            trs = []
+            for t in mini_slots(ev):
+                bk = booked.get(t)
+                if bk:
+                    who = (f'<a href="/admin/clients/{bk["client_id"]}"><strong>{esc(bk["name"])}</strong></a>'
+                           if bk["client_id"] else f'<strong>{esc(bk["name"])}</strong>')
+                    info = (f'<a href="mailto:{esc(bk["email"])}">{esc(bk["email"])}</a> {esc(bk["phone"])}'
+                            f'{"<br>" + esc(bk["people"]) if bk["people"] else ""}'
+                            f'{snippet(bk["notes"], 200)}')
+                    action = (f'<form method="post" action="/admin/minis/{ev["id"]}/cancel" '
+                              f'data-confirm="Cancel {esc(bk["name"])}\'s {nice_time(t)} booking? The time opens up again.">'
+                              f'<input type="hidden" name="booking" value="{bk["id"]}"><button class="link-btn">Cancel</button></form>')
+                else:
+                    who, info, action = '<span class="muted">Open</span>', "", ""
+                trs.append(f'<tr><td><strong>{nice_time(t)}</strong></td><td>{who}</td><td>{info}</td><td>{action}</td></tr>')
+            slots_n = len(mini_slots(ev))
+            extra = f"""
+  <section>
+    <div class="admin-head"><h2>Schedule <span class="muted">({len(booked)} of {slots_n} booked)</span></h2></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Family</th><th>Contact</th><th></th></tr></thead>
+    <tbody>{''.join(trs) or '<tr><td colspan="4" class="muted">No time slots. Check the start, end and length.</td></tr>'}</tbody></table></div>
+  </section>
+  <form method="post" action="/admin/minis/{ev['id']}/delete" class="mt-xl"
+        data-confirm="Delete “{esc(ev['title'])}” and all its bookings? This can't be undone.">
+    <button class="btn ghost small danger">Delete mini session</button></form>"""
+        title = ev["title"] if ev else "New mini session"
+        self.admin_page(f'<div class="admin-head"><h1>{esc(title)}</h1></div>{form}{extra}', title, "minis", notice,
+                        crumbs=[("Mini sessions", "/admin/minis"), (title, None)])
+
+    def admin_mini_save(self, form):
+        f = {k: (form.get(k) or "").strip() for k in
+             ("id", "title", "date", "status", "location", "start_time", "end_time", "slot_minutes",
+              "gap_minutes", "price", "details")}
+        ok = (f["title"] and re.fullmatch(r"\d{4}-\d{2}-\d{2}", f["date"])
+              and re.fullmatch(r"\d{2}:\d{2}", f["start_time"]) and re.fullmatch(r"\d{2}:\d{2}", f["end_time"])
+              and f["slot_minutes"].isdigit() and 5 <= int(f["slot_minutes"]) <= 240)
+        back = f"/admin/minis/{f['id']}" if f["id"].isdigit() else "/admin/minis/new"
+        if not ok:
+            return self.redirect(back + "?done=mini-invalid")
+        gap = int(f["gap_minutes"]) if f["gap_minutes"].isdigit() else 0
+        status = f["status"] if f["status"] in MINI_STATUSES else "draft"
+        vals = (f["title"][:120], f["date"], f["location"][:200], f["start_time"], f["end_time"],
+                int(f["slot_minutes"]), min(gap, 120), f["price"][:60], f["details"][:3000], status)
+        with DB_LOCK, db() as c:
+            if f["id"].isdigit():
+                eid = int(f["id"])
+                c.execute("""UPDATE mini_events SET title=?, date=?, location=?, start_time=?, end_time=?,
+                             slot_minutes=?, gap_minutes=?, price=?, details=?, status=? WHERE id=?""", (*vals, eid))
+            else:
+                base = slugify(f"{f['title']} {f['date']}")
+                slug, n = base, 2
+                while c.execute("SELECT 1 FROM mini_events WHERE slug=?", (slug,)).fetchone():
+                    slug, n = f"{base}-{n}", n + 1
+                eid = c.execute("""INSERT INTO mini_events (title, date, location, start_time, end_time, slot_minutes,
+                                   gap_minutes, price, details, status, created, slug) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (*vals, time.strftime("%Y-%m-%d"), slug)).lastrowid
+        self.redirect(f"/admin/minis/{eid}?done=mini-saved")
+
+    def admin_mini_cancel(self, event_id, form):
+        bid = form.get("booking", "")
+        if bid.isdigit():
+            with DB_LOCK, db() as c:
+                c.execute("UPDATE mini_bookings SET status='cancelled' WHERE id=? AND event_id=?", (int(bid), event_id))
+        self.redirect(f"/admin/minis/{event_id}?done=booking-cancelled")
+
+    def admin_mini_delete(self, event_id):
+        with DB_LOCK, db() as c:
+            c.execute("DELETE FROM mini_bookings WHERE event_id=?", (event_id,))
+            c.execute("DELETE FROM mini_events WHERE id=?", (event_id,))
+        self.redirect("/admin/minis?done=mini-deleted")
 
     # ---- galleries
     def gallery_login(self):

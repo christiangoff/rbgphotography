@@ -1,6 +1,6 @@
 /* Admin layout: sidebar + content. Loaded after site.css on admin pages only. */
 .admin-body { background: #F6F2EC; }
-.admin-shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
+.admin-shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; background: linear-gradient(to right, var(--forest) 248px, transparent 248px); }
 
 .sidebar { background: var(--forest); color: var(--cream); display: flex; flex-direction: column; padding: 1.6rem 1rem 1.2rem; position: sticky; top: 0; height: 100vh; }
 .side-brand { display: block; padding: 0 .6rem 1.8rem; }
@@ -46,3 +46,4 @@
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 10; transform: translateX(-100%); transition: transform .2s; box-shadow: 0 0 40px rgba(0,0,0,.25); }
   .sidebar.open { transform: none; }
 }
+@media (max-width: 900px) { .admin-shell { background: none; } }
