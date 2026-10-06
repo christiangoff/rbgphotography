@@ -55,8 +55,17 @@ CURRENT = ' aria-current="page"'
 MAX_BODY = 32 * 1024
 MAX_UPLOAD = 60 * 1024 * 1024  # per photo
 
-ADMIN_SECTIONS = [("inquiries", "/admin", "Inquiries"), ("clients", "/admin/clients", "Clients"),
-                  ("galleries", "/admin/galleries", "Galleries"), ("photos", "/admin/photos", "Site photos")]
+ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("inquiries", "/admin/inquiries", "Inquiries"),
+                  ("clients", "/admin/clients", "Clients"), ("galleries", "/admin/galleries", "Galleries"),
+                  ("photos", "/admin/photos", "Site photos")]
+# Simple line icons for the admin sidebar (24x24, stroke = currentColor)
+ADMIN_ICONS = {
+    "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
+    "inquiries": '<path d="M4 4h16v12H5.5L4 17.5z"/><path d="M8 9h8M8 12h5"/>',
+    "clients": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5c2.3 0 4 1.5 4.5 4"/>',
+    "galleries": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="M3 17l5-4.5 4 3.5 3-2.5 6 4.5"/>',
+    "photos": '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+}
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
            "photo-removed": "Photo removed.", "code-taken": "Another gallery already uses that code. Pick a different one."}
@@ -692,14 +701,29 @@ class Handler(BaseHTTPRequestHandler):
                       {"WWW-Authenticate": 'Basic realm="RBG admin", charset="UTF-8"'})
         return False
 
-    def admin_page(self, body, title, section, notice=""):
-        tabs = "".join(
-            f'<a href="{href}"{CURRENT if key == section else ""}>{label}</a>'
-            for key, href, label in ADMIN_SECTIONS)
-        msg = f'<p class="notice" role="status">{esc(notice)}</p>' if notice else ""
-        html_ = (f'<div class="admin"><nav class="admin-nav" aria-label="Admin">{tabs}</nav>{msg}{body}</div>'
-                 f'<script src="/static/js/admin.js" defer></script>')
-        self.page(html_, title, noindex=True)
+    def admin_page(self, body, title, section, notice="", crumbs=None):
+        with db() as c:
+            new_count = c.execute("SELECT COUNT(*) FROM inquiries WHERE status='new'").fetchone()[0]
+        items = []
+        for key, href, label in ADMIN_SECTIONS:
+            badge = f'<span class="badge">{new_count}</span>' if key == "inquiries" and new_count else ""
+            icon = (f'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" '
+                    f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+                    f'{ADMIN_ICONS[key]}</svg>')
+            items.append(f'<li><a href="{href}"{CURRENT if key == section else ""}>{icon}<span>{label}</span>{badge}</a></li>')
+        trail = ""
+        if crumbs:
+            trail = '<nav class="crumbs" aria-label="Breadcrumb">' + " <span>›</span> ".join(
+                f'<a href="{h}">{esc(t)}</a>' if h else f'<span aria-current="page">{esc(t)}</span>'
+                for t, h in crumbs) + "</nav>"
+        values = business_vars()
+        values.update({
+            "title": esc(title), "nav": "\n".join(items), "crumbs": trail,
+            "notice": f'<p class="notice" role="status">{esc(notice)}</p>' if notice else "",
+            "admin_user": esc(CFG["admin"]["username"]), "content": body,
+        })
+        layout = (TEMPLATES / "admin.html").read_text(encoding="utf-8")
+        self.send(200, version_photo_urls(fill(layout, values)), headers={"Cache-Control": "no-store"})
 
     def query(self):
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
@@ -711,6 +735,8 @@ class Handler(BaseHTTPRequestHandler):
         q = self.query()
         notice = NOTICES.get(q.get("done", ""), "")
         if p == "/admin":
+            return self.admin_dashboard(notice)
+        if p == "/admin/inquiries":
             return self.admin_inquiries(q.get("status", "open"), notice)
         if p == "/admin/inquiries.csv":
             return self.admin_csv()
@@ -751,7 +777,7 @@ class Handler(BaseHTTPRequestHandler):
                 with DB_LOCK, db() as c:
                     c.execute("UPDATE inquiries SET status=? WHERE id=?", (form["status"], int(form["id"])))
             back = form.get("back", "open")
-            return self.redirect("/admin?status=" + (back if back in STATUSES + ["open", "all"] else "open"))
+            return self.redirect("/admin/inquiries?status=" + (back if back in STATUSES + ["open", "all"] else "open"))
         m = re.fullmatch(r"/admin/inquiries/(\d+)/client", p)
         if m:
             return self.admin_inquiry_to_client(int(m.group(1)))
@@ -774,6 +800,47 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_photo_move(form.get("name", ""), form.get("dir", ""))
         self.not_found()
 
+    # ---- admin: dashboard
+    def admin_dashboard(self, notice):
+        with db() as c:
+            new = c.execute("SELECT * FROM inquiries WHERE status='new' ORDER BY id DESC LIMIT 5").fetchall()
+            new_count = c.execute("SELECT COUNT(*) FROM inquiries WHERE status='new'").fetchone()[0]
+            clients = c.execute("SELECT COUNT(*) FROM clients WHERE status!='past'").fetchone()[0]
+        gals = all_galleries()
+        live = sum(1 for g in gals if g["active"])
+        names = self.client_names()
+
+        def stat(n, label, href, hint):
+            return (f'<a class="stat" href="{href}"><strong>{n}</strong><span>{label}</span>'
+                    f'<small>{hint}</small></a>')
+        stats = "".join([
+            stat(new_count, "New inquiries", "/admin/inquiries?status=new", "Waiting for a reply"),
+            stat(clients, "Clients", "/admin/clients", "Leads and active families"),
+            stat(live, "Live galleries", "/admin/galleries", "Clients can open these now"),
+            stat(len(portfolio_photos()), "Portfolio photos", "/admin/photos", "Shown on the Portfolio page"),
+        ])
+        inbox = "".join(
+            f'<li><a href="/admin/inquiries?status=new"><strong>{esc(r["name"])}</strong></a> '
+            f'<span class="muted">· {esc(r["session_type"])} · {esc(r["created"])}</span>'
+            f'{snippet(r["message"], 120)}</li>' for r in new) or '<li class="muted">You\'re all caught up.</li>'
+        recent = "".join(
+            f'<li><a href="/admin/galleries/{g["slug"]}"><strong>{esc(g["title"])}</strong></a> '
+            f'<span class="muted">· {esc(names.get(g["client_id"], "No client"))} · {len(g["photos"])} photos</span></li>'
+            for g in gals[:5]) or '<li class="muted">No galleries yet.</li>'
+        body = f"""
+  <div class="admin-head"><h1>Hello, {esc(CFG["business"]["photographer"].split()[0])}</h1></div>
+  <div class="stats">{stats}</div>
+  <div class="quick">
+    <a class="btn small" href="/admin/galleries/new">New gallery</a>
+    <a class="btn ghost small" href="/admin/clients/new">Add client</a>
+    <a class="btn ghost small" href="/admin/photos">Update site photos</a>
+  </div>
+  <div class="admin-cols">
+    <section class="card-pad"><div class="admin-head"><h2>New inquiries</h2><a href="/admin/inquiries">See all</a></div><ul class="plain">{inbox}</ul></section>
+    <section class="card-pad"><div class="admin-head"><h2>Recent galleries</h2><a href="/admin/galleries">See all</a></div><ul class="plain">{recent}</ul></section>
+  </div>"""
+        self.admin_page(body, "Dashboard", "dashboard", notice)
+
     # ---- admin: inquiries
     def admin_inquiries(self, show, notice):
         with db() as c:
@@ -790,7 +857,7 @@ class Handler(BaseHTTPRequestHandler):
             n = sum(v for k, v in counts.items() if k != "archived") if key == "open" else \
                 sum(counts.values()) if key == "all" else counts.get(key, 0)
             cur = ' aria-current="page"' if key == show else ""
-            tabs.append(f'<a href="/admin?status={key}"{cur}>{label} <span>{n}</span></a>')
+            tabs.append(f'<a href="/admin/inquiries?status={key}"{cur}>{label} <span>{n}</span></a>')
         cards = []
         for r in rows:
             opts = "".join(f'<option value="{s}"{" selected" if s == r["status"] else ""}>{s.title()}</option>'
@@ -953,7 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
     <button class="btn ghost small danger">Delete client</button></form>"""
         title = r["name"] if r else "New client"
         body = f'<div class="admin-head"><h1>{esc(title)}</h1></div>{form}{extra}'
-        self.admin_page(body, title, "clients", notice)
+        self.admin_page(body, title, "clients", notice, crumbs=[("Clients", "/admin/clients"), (title, None)])
 
     def admin_client_save(self, form):
         f = {k: (form.get(k) or "").strip() for k in ("id", "name", "email", "phone", "family", "notes", "status")}
@@ -1062,7 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
   <form method="post" action="/admin/galleries/{g['slug']}/delete" data-confirm="Delete the whole gallery “{esc(g['title'])}”? It's moved to data/trash on the Pi, not erased.">
     <button class="btn ghost small danger">Delete gallery</button></form>"""
         title = g["title"] if g else "New gallery"
-        self.admin_page(f'<div class="admin-head"><h1>{esc(title)}</h1></div>{form}{extra}', title, "galleries", notice)
+        self.admin_page(f'<div class="admin-head"><h1>{esc(title)}</h1></div>{form}{extra}', title, "galleries", notice,
+                        crumbs=[("Galleries", "/admin/galleries"), (title, None)])
 
     def admin_gallery_save(self, form):
         f = {k: (form.get(k) or "").strip() for k in ("slug", "title", "client_id", "code", "expires", "note")}

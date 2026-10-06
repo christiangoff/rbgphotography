@@ -70,7 +70,9 @@ Set at least:
 ## 4. The admin dashboard
 
 Open **/admin** (username `rachel`, the password from `config.ini`). Everything
-below works from a phone or laptop on the same network.
+below works from a phone or laptop on the same network. A sidebar on the left
+(a Menu button on phones) takes you between sections, and the **Dashboard**
+shows new inquiries, recent galleries and shortcuts for common jobs.
 
 - **Inquiries:** booking requests from the Book page. Mark each one New →
   Contacted → Booked → Archived, download them as a spreadsheet, or press

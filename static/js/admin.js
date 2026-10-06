@@ -56,3 +56,17 @@
     }
   });
 })();
+
+// Admin sidebar on small screens
+(function () {
+  var btn = document.querySelector(".side-toggle"), side = document.getElementById("sidebar");
+  if (!btn || !side) return;
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var open = side.classList.toggle("open");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  document.addEventListener("click", function (e) {
+    if (side.classList.contains("open") && !side.contains(e.target)) { side.classList.remove("open"); btn.setAttribute("aria-expanded", "false"); }
+  });
+})();

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{{title}} · {{site_name}} admin</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/static/css/site.css">
+  <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="admin-body">
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="admin-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="side-brand" href="/admin" aria-label="Admin home">
+        <img src="/static/img/brand/rbg-logo-horizontal-reversed.svg" alt="{{site_name}}" width="180" height="43">
+      </a>
+      <nav aria-label="Admin">
+        <ul class="side-nav">
+{{nav}}
+        </ul>
+      </nav>
+      <div class="side-foot">
+        <a href="/" target="_blank" rel="noopener">View website ↗</a>
+        <span>Signed in as {{admin_user}}</span>
+      </div>
+    </aside>
+    <div class="admin-main">
+      <header class="topbar">
+        <button class="side-toggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+        <img src="/static/img/brand/rbg-logo-horizontal-color.svg" alt="{{site_name}}" width="150" height="36">
+      </header>
+      <main id="main" class="admin">
+{{crumbs}}
+{{notice}}
+{{content}}
+      </main>
+    </div>
+  </div>
+  <script src="/static/js/admin.js" defer></script>
+</body>
+</html>
