@@ -49,13 +49,14 @@ DATA = ROOT / "data"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 SESSION_TYPES = ["Mini session", "Family session", "Extended family", "Newborn & lifestyle",
                  "Fall / holiday mini", "Not sure yet"]
-STATUSES = ["new", "contacted", "booked", "archived"]
+STATUSES = ["new", "contacted", "booked", "completed", "archived"]
 CLIENT_STATUSES = ["lead", "active", "past"]
+DEPOSIT_DUE = ' <span class="tag due">Deposit due</span>'
 CURRENT = ' aria-current="page"'
 MAX_BODY = 32 * 1024
 MAX_UPLOAD = 60 * 1024 * 1024  # per photo
 
-ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("inquiries", "/admin/inquiries", "Inquiries"),
+ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("sessions", "/admin/sessions", "Sessions"),
                   ("minis", "/admin/minis", "Mini sessions"), ("clients", "/admin/clients", "Clients"),
                   ("galleries", "/admin/galleries", "Galleries"),
                   ("emails", "/admin/emails", "Emails"),
@@ -63,7 +64,7 @@ ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("inquiries", "/admin/in
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
-    "inquiries": '<path d="M4 4h16v12H5.5L4 17.5z"/><path d="M8 9h8M8 12h5"/>',
+    "sessions": '<path d="M4 4h16v12H5.5L4 17.5z"/><path d="M8 9h8M8 12h5"/>',
     "minis": '<rect x="3.5" y="5" width="17" height="15" rx="1.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h2M12 14h2M16 14h0.5M8 17h2"/>',
     "clients": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5c2.3 0 4 1.5 4.5 4"/>',
     "galleries": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="M3 17l5-4.5 4 3.5 3-2.5 6 4.5"/>',
@@ -75,7 +76,8 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "photo-removed": "Photo removed.", "mini-saved": "Mini session saved.",
            "mini-deleted": "Mini session deleted.", "booking-cancelled": "Booking cancelled. That time is open again.",
            "mini-invalid": "Please fill in the title, date, start and end times, and minutes per session.", "code-taken": "Another gallery already uses that code. Pick a different one.",
-           "email-sent": "Email sent.", "booking-confirmed": "Confirmation sent. The inquiry is marked booked.",
+           "email-sent": "Email sent.", "booking-confirmed": "Confirmation sent. The session is marked booked.",
+           "session-saved": "Session details saved.", "payment-saved": "Payment updated.",
            "template-saved": "Template saved.", "test-sent": "Test email sent. Check the inbox.",
            "test-failed": "The test email didn't go through. Check the [email] settings in config.ini."}
 PHOTO_HINTS = {
@@ -109,7 +111,7 @@ def load_config():
         "business": {"name": "RBG Photography", "photographer": "Rachel Goff",
                      "email": "hello@example.com", "phone": "", "city": "Woodstock",
                      "region": "MD", "service_area": "Howard, Baltimore & Carroll Counties",
-                     "instagram": "", "facebook": ""},
+                     "instagram": "", "facebook": "", "deposit_link": "", "deposit": ""},
         "admin": {"username": "rachel", "password": ""},
         "email": {"enabled": "false", "smtp_host": "", "smtp_port": "587", "smtp_user": "",
                   "smtp_password": "", "from_address": "", "notify_address": ""},
@@ -185,7 +187,10 @@ with db() as _c:
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
     # Bring databases made by older versions up to date by adding any missing columns.
     for _table, _cols in {
-        "inquiries": {"client_id": "INTEGER", "adults": "INTEGER", "kids": "INTEGER"},
+        "inquiries": {"client_id": "INTEGER", "adults": "INTEGER", "kids": "INTEGER",
+                      "session_date": "TEXT", "session_time": "TEXT", "session_location": "TEXT",
+                      "price": "TEXT", "deposit": "TEXT", "deposit_link": "TEXT",
+                      "deposit_paid": "TEXT", "paid_full": "TEXT", "gallery": "TEXT"},
         "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
                     "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
                     "adults": "INTEGER", "kids": "INTEGER"},
@@ -610,9 +615,10 @@ EMAIL_TEMPLATES = [
     ("confirm", "Booking confirmation", "Your {session_type} is confirmed",
      "Hi {first_name},\n\nThank you for booking with {business}! Your {session_type} is confirmed:\n\n"
      "Date: {date}\nTime: {time}\nLocation: {location}\n\n"
+     "To hold your date, please pay the {deposit} deposit here:\n{deposit_link}\n\n"
      "I'll send a few tips on what to wear and what to bring a week before. If anything changes, "
      "just reply to this email.\n\nSee you soon!\n{photographer}\n{business}"),
-    ("reply", "Reply to an inquiry", "Your session with {business}",
+    ("reply", "Reply to a session request", "Your session with {business}",
      "Hi {first_name},\n\nThank you so much for reaching out about a {session_type}! "
      "I'd love to work with your family.\n\n\n\nTalk soon,\n{photographer}\n{business}"),
     ("reminder", "Session reminder", "See you {date}!",
@@ -627,7 +633,15 @@ EMAIL_TEMPLATES = [
      "would mean the world to me, and I'd be happy to photograph your family again anytime.\n\n{photographer}"),
     ("message", "Blank message", "", "Hi {first_name},\n\n\n\n{photographer}\n{business}"),
 ]
+OLD_CONFIRM_BODY = (
+    "Hi {first_name},\n\nThank you for booking with {business}! Your {session_type} is confirmed:\n\n"
+    "Date: {date}\nTime: {time}\nLocation: {location}\n\n"
+    "I'll send a few tips on what to wear and what to bring a week before. If anything changes, "
+    "just reply to this email.\n\nSee you soon!\n{photographer}\n{business}")
 with db() as _c:
+    # templates still exactly as first shipped pick up the deposit line and new wording
+    _c.execute("UPDATE email_templates SET body=? WHERE key='confirm' AND body=?", (EMAIL_TEMPLATES[0][3], OLD_CONFIRM_BODY))
+    _c.execute("UPDATE email_templates SET name=? WHERE key='reply' AND name='Reply to an inquiry'", (EMAIL_TEMPLATES[1][1],))
     _c.executemany("INSERT OR IGNORE INTO email_templates (key, name, subject, body, sort) VALUES (?,?,?,?,?)",
                    [(*t, n) for n, t in enumerate(EMAIL_TEMPLATES)])
 
@@ -994,7 +1008,7 @@ class Handler(BaseHTTPRequestHandler):
             new_count = c.execute("SELECT COUNT(*) FROM inquiries WHERE status='new'").fetchone()[0]
         items = []
         for key, href, label in ADMIN_SECTIONS:
-            badge = f'<span class="badge">{new_count}</span>' if key == "inquiries" and new_count else ""
+            badge = f'<span class="badge">{new_count}</span>' if key == "sessions" and new_count else ""
             icon = (f'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" '
                     f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
                     f'{ADMIN_ICONS[key]}</svg>')
@@ -1024,10 +1038,12 @@ class Handler(BaseHTTPRequestHandler):
         notice = NOTICES.get(q.get("done", ""), "")
         if p == "/admin":
             return self.admin_dashboard(notice)
-        if p == "/admin/inquiries":
-            return self.admin_inquiries(q.get("status", "open"), notice)
-        if p == "/admin/inquiries.csv":
+        if p == "/admin/sessions":
+            return self.admin_sessions(q.get("status", "open"), notice)
+        if p in ("/admin/sessions.csv", "/admin/inquiries.csv"):
             return self.admin_csv()
+        if p == "/admin/inquiries":  # old address
+            return self.redirect("/admin/sessions" + (f"?status={quote(q['status'])}" if q.get("status") else ""))
         if p == "/admin/clients":
             return self.admin_clients(q.get("q", ""), q.get("status", "all"), notice)
         if p == "/admin/clients/new":
@@ -1038,7 +1054,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/admin/galleries":
             return self.admin_galleries(notice)
         if p == "/admin/galleries/new":
-            return self.admin_gallery_form(None, q.get("client", ""), notice)
+            return self.admin_gallery_form(None, q.get("client", ""), notice, q.get("session", ""))
         m = re.fullmatch(r"/admin/galleries/([a-z0-9-]+)", p)
         if m:
             return self.admin_gallery_form(m.group(1), "", notice)
@@ -1076,7 +1092,12 @@ class Handler(BaseHTTPRequestHandler):
                 with DB_LOCK, db() as c:
                     c.execute("UPDATE inquiries SET status=? WHERE id=?", (form["status"], int(form["id"])))
             back = form.get("back", "open")
-            return self.redirect("/admin/inquiries?status=" + (back if back in STATUSES + ["open", "all"] else "open"))
+            return self.redirect("/admin/sessions?status=" + (back if back in STATUSES + ["open", "all"] else "open")
+                                 + (f"#s{form['id']}" if form.get("id", "").isdigit() else ""))
+        m = re.fullmatch(r"/admin/sessions/(\d+)/(save|pay)", p)
+        if m:
+            sid = int(m.group(1))
+            return self.admin_session_save(sid, form) if m.group(2) == "save" else self.admin_session_pay(sid, form)
         m = re.fullmatch(r"/admin/inquiries/(\d+)/client", p)
         if m:
             return self.admin_inquiry_to_client(int(m.group(1)))
@@ -1129,13 +1150,13 @@ class Handler(BaseHTTPRequestHandler):
             return (f'<a class="stat" href="{href}"><strong>{n}</strong><span>{label}</span>'
                     f'<small>{hint}</small></a>')
         stats = "".join([
-            stat(new_count, "New inquiries", "/admin/inquiries?status=new", "Waiting for a reply"),
+            stat(new_count, "New requests", "/admin/sessions?status=new", "Waiting for a reply"),
             stat(clients, "Clients", "/admin/clients", "Leads and active families"),
             stat(live, "Live galleries", "/admin/galleries", "Clients can open these now"),
             stat(len(portfolio_photos()), "Portfolio photos", "/admin/photos", "Shown on the Portfolio page"),
         ])
         inbox = "".join(
-            f'<li><a href="/admin/inquiries?status=new"><strong>{esc(r["name"])}</strong></a> '
+            f'<li><a href="/admin/sessions?status=new#s{r["id"]}"><strong>{esc(r["name"])}</strong></a> '
             f'<span class="muted">· {esc(r["session_type"])} · {esc(r["created"])}</span>'
             f'{snippet(r["message"], 120)}</li>' for r in new) or '<li class="muted">You\'re all caught up.</li>'
         recent = "".join(
@@ -1146,6 +1167,16 @@ class Handler(BaseHTTPRequestHandler):
             upcoming = c.execute("""SELECT b.name, b.slot, e.date, e.title, e.id AS eid FROM mini_bookings b
                                     JOIN mini_events e ON e.id=b.event_id WHERE b.status='booked' AND e.date>=?
                                     ORDER BY e.date, b.slot LIMIT 6""", (time.strftime("%Y-%m-%d"),)).fetchall()
+        with db() as c:
+            booked = c.execute("""SELECT * FROM inquiries WHERE status='booked' AND (session_date IS NULL
+                                  OR session_date='' OR session_date>=?) ORDER BY COALESCE(NULLIF(session_date, ''), '9999'),
+                                  session_time LIMIT 6""", (time.strftime("%Y-%m-%d"),)).fetchall()
+        sessions = "".join(
+            f'<li><a href="/admin/sessions?status=booked#s{r["id"]}"><strong>{esc(r["name"])}</strong></a> '
+            f'<span class="muted">· {esc(nice_date(r["session_date"]).rsplit(",", 1)[0]) if r["session_date"] else "Date not set"}'
+            f'{", " + nice_time(r["session_time"]) if r["session_time"] else ""}</span>'
+            f'{"" if r["deposit_paid"] else DEPOSIT_DUE}</li>'
+            for r in booked) or '<li class="muted">No booked sessions coming up.</li>'
         minis = "".join(
             f'<li><a href="/admin/minis/{r["eid"]}"><strong>{esc(r["name"])}</strong></a> '
             f'<span class="muted">· {esc(nice_date(r["date"]).rsplit(",", 1)[0])}, {nice_time(r["slot"])}</span></li>'
@@ -1160,64 +1191,143 @@ class Handler(BaseHTTPRequestHandler):
     <a class="btn ghost small" href="/admin/photos">Update site photos</a>
   </div>
   <div class="admin-cols">
-    <section class="card-pad"><div class="admin-head"><h2>New inquiries</h2><a href="/admin/inquiries">See all</a></div><ul class="plain">{inbox}</ul></section>
+    <section class="card-pad"><div class="admin-head"><h2>New requests</h2><a href="/admin/sessions">See all</a></div><ul class="plain">{inbox}</ul></section>
+    <section class="card-pad"><div class="admin-head"><h2>Upcoming sessions</h2><a href="/admin/sessions?status=booked">See all</a></div><ul class="plain">{sessions}</ul></section>
     <section class="card-pad"><div class="admin-head"><h2>Upcoming minis</h2><a href="/admin/minis">See all</a></div><ul class="plain">{minis}</ul></section>
     <section class="card-pad"><div class="admin-head"><h2>Recent galleries</h2><a href="/admin/galleries">See all</a></div><ul class="plain">{recent}</ul></section>
   </div>"""
         self.admin_page(body, "Dashboard", "dashboard", notice)
 
-    # ---- admin: inquiries
-    def admin_inquiries(self, show, notice):
+    # ---- admin: sessions (booking requests from the Book page, then the booked session itself)
+    def admin_sessions(self, show, notice):
         with db() as c:
             if show == "all":
                 rows = c.execute("SELECT * FROM inquiries ORDER BY id DESC").fetchall()
+            elif show == "booked":  # soonest session first, undated ones last
+                rows = c.execute("""SELECT * FROM inquiries WHERE status='booked'
+                                    ORDER BY COALESCE(NULLIF(session_date, ''), '9999'), session_time, id""").fetchall()
             elif show in STATUSES:
                 rows = c.execute("SELECT * FROM inquiries WHERE status=? ORDER BY id DESC", (show,)).fetchall()
             else:
                 show = "open"
-                rows = c.execute("SELECT * FROM inquiries WHERE status!='archived' ORDER BY id DESC").fetchall()
+                rows = c.execute("SELECT * FROM inquiries WHERE status NOT IN ('archived', 'completed') "
+                                 "ORDER BY id DESC").fetchall()
             counts = dict(c.execute("SELECT status, COUNT(*) FROM inquiries GROUP BY status").fetchall())
         tabs = []
         for key, label in [("open", "Open"), *[(s, s.title()) for s in STATUSES], ("all", "All")]:
-            n = sum(v for k, v in counts.items() if k != "archived") if key == "open" else \
+            n = sum(v for k, v in counts.items() if k not in ("archived", "completed")) if key == "open" else \
                 sum(counts.values()) if key == "all" else counts.get(key, 0)
-            cur = ' aria-current="page"' if key == show else ""
-            tabs.append(f'<a href="/admin/inquiries?status={key}"{cur}>{label} <span>{n}</span></a>')
-        cards = []
-        for r in rows:
-            opts = "".join(f'<option value="{s}"{" selected" if s == r["status"] else ""}>{s.title()}</option>'
-                           for s in STATUSES)
-            details = "".join(
-                f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in
-                [("Phone", r["phone"]), ("Who's coming", party_of(r)), ("Dates", r["dates"]),
-                 ("Location", r["location"]), ("Heard about us", r["heard"])] if val)
-            if r["client_id"]:
-                client_btn = f'<a class="btn ghost small" href="/admin/clients/{r["client_id"]}">View client</a>'
-            else:
-                client_btn = (f'<form method="post" action="/admin/inquiries/{r["id"]}/client">'
-                              f'<button class="btn ghost small">Add to clients</button></form>')
-            cards.append(f"""
-<article class="inq status-{esc(r['status'])}">
-  <header><h3>{esc(r['name'])}</h3><span class="tag">{esc(r['session_type'])}</span>
-    <time>{esc(r['created'])}</time></header>
-  <p><a href="mailto:{esc(r['email'])}?subject={quote('Your RBG Photography session')}">{esc(r['email'])}</a></p>
+            tabs.append(f'<a href="/admin/sessions?status={key}"{CURRENT if key == show else ""}>{label} <span>{n}</span></a>')
+        cards = "".join(self.session_card(r, show) for r in rows)
+        body = f"""
+  <div class="admin-head"><h1>Sessions</h1><a class="btn ghost small" href="/admin/sessions.csv">Download CSV</a></div>
+  <nav class="tabs">{''.join(tabs)}</nav>
+  {cards or '<p class="muted">Nothing here yet. Requests from the Book page show up here.</p>'}"""
+        self.admin_page(body, "Sessions", "sessions", notice)
+
+    def session_card(self, r, show):
+        sid = r["id"]
+        opts = "".join(f'<option value="{s}"{" selected" if s == r["status"] else ""}>{s.title()}</option>'
+                       for s in STATUSES)
+        details = "".join(
+            f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in
+            [("Phone", r["phone"]), ("Who's coming", party_of(r)), ("Dates asked for", r["dates"]),
+             ("Location idea", r["location"]), ("Heard about us", r["heard"])] if val)
+        when = ", ".join(x for x in [nice_date(r["session_date"]) if r["session_date"] else "",
+                                     nice_time(r["session_time"]) if r["session_time"] else ""] if x)
+        flags = "".join([
+            f'<span class="tag ok">Paid in full</span>' if r["paid_full"] else
+            f'<span class="tag ok">Deposit paid</span>' if r["deposit_paid"] else
+            ('<span class="tag due">Deposit due</span>' if r["status"] == "booked" else ""),
+        ])
+
+        def pay(what, label, done_on):
+            if done_on:
+                return (f'<form method="post" action="/admin/sessions/{sid}/pay" class="paid">'
+                        f'<input type="hidden" name="what" value="{what}"><input type="hidden" name="undo" value="1">'
+                        f'<span class="check on" aria-hidden="true">✓</span> <strong>{label}</strong> '
+                        f'<span class="muted">{esc(nice_date(done_on))}</span> '
+                        f'<button class="link-btn small">Undo</button></form>')
+            return (f'<form method="post" action="/admin/sessions/{sid}/pay" class="paid">'
+                    f'<input type="hidden" name="what" value="{what}">'
+                    f'<button class="btn ghost small"><span class="check" aria-hidden="true"></span>Mark {label.lower()}</button></form>')
+        if r["gallery"] and read_gallery(r["gallery"]):
+            gallery_btn = f'<a class="btn ghost small" href="/admin/galleries/{esc(r["gallery"])}">View gallery</a>'
+        else:
+            gallery_btn = f'<a class="btn ghost small" href="/admin/galleries/new?session={sid}">Create gallery</a>'
+        client_btn = (f'<a class="btn ghost small" href="/admin/clients/{r["client_id"]}">View client</a>' if r["client_id"] else
+                      f'<form method="post" action="/admin/inquiries/{sid}/client"><button class="btn ghost small">Add to clients</button></form>')
+        v = (lambda k: esc(r[k] or ""))
+        booked = r["status"] in ("booked", "completed")
+        session_box = f"""
+  <details class="session-box"{" open" if booked else ""}>
+    <summary>Session details{f' · {esc(when)}' if when else ''}</summary>
+    <form method="post" action="/admin/sessions/{sid}/save" class="form compact">
+      <label>Date<input type="date" name="session_date" value="{v('session_date')}"></label>
+      <label>Time<input type="time" name="session_time" value="{v('session_time')}"></label>
+      <label class="full">Location<input name="session_location" maxlength="200" value="{v('session_location')}"></label>
+      <label>Price<input name="price" maxlength="40" value="{v('price')}" placeholder="$425"></label>
+      <label>Deposit<input name="deposit" maxlength="40" value="{v('deposit')}" placeholder="{esc(CFG['business']['deposit'] or '$100')}"></label>
+      <label class="full">Deposit link <span class="opt">(goes in the confirmation email)</span>
+        <input name="deposit_link" type="url" maxlength="500" value="{v('deposit_link')}" placeholder="{esc(CFG['business']['deposit_link'] or 'https://square.link/…')}"></label>
+      <div class="full row-actions"><button class="btn small">Save details</button></div>
+    </form>
+    <div class="payments">{pay("deposit", "Deposit paid", r["deposit_paid"])}{pay("full", "Paid in full", r["paid_full"])}</div>
+  </details>"""
+        return f"""
+<article class="inq status-{esc(r['status'])}" id="s{sid}">
+  <header><h3>{esc(r['name'])}</h3><span class="tag">{esc(r['session_type'])}</span>{flags}
+    <time>Requested {esc(r['created'])}</time></header>
+  <p><a href="mailto:{esc(r['email'])}">{esc(r['email'])}</a></p>
   <dl>{details}</dl>
   {f'<blockquote>{esc(r["message"])}</blockquote>' if r['message'] else ''}
+  {session_box}
   <div class="row-actions">
     <form method="post" action="/admin/status" class="inline">
-      <input type="hidden" name="id" value="{r['id']}"><input type="hidden" name="back" value="{esc(show)}">
+      <input type="hidden" name="id" value="{sid}"><input type="hidden" name="back" value="{esc(show)}">
       <label>Status <select name="status">{opts}</select></label> <button class="btn small">Save</button>
     </form>
-    {client_btn}
-    <a class="btn small" href="/admin/email?inquiry={r['id']}&amp;template=confirm">Confirm booking</a>
-    <a class="btn ghost small" href="/admin/email?inquiry={r['id']}&amp;template=reply">Reply</a>
+    {client_btn}{gallery_btn}
+    <a class="btn small" href="/admin/email?inquiry={sid}&amp;template=confirm">{'Resend confirmation' if booked else 'Confirm booking'}</a>
+    <a class="btn ghost small" href="/admin/email?inquiry={sid}&amp;template=reply">Email</a>
   </div>
-</article>""")
-        body = f"""
-  <div class="admin-head"><h1>Inquiries</h1><a class="btn ghost small" href="/admin/inquiries.csv">Download CSV</a></div>
-  <nav class="tabs">{''.join(tabs)}</nav>
-  {''.join(cards) or '<p class="muted">Nothing here yet. New inquiries from the Book page will show up here.</p>'}"""
-        self.admin_page(body, "Inquiries", "inquiries", notice)
+</article>"""
+
+    def admin_session_save(self, sid, form):
+        f = {k: (form.get(k) or "").strip() for k in
+             ("session_date", "session_time", "session_location", "price", "deposit", "deposit_link")}
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", f["session_date"]):
+            f["session_date"] = ""
+        if not re.fullmatch(r"\d{1,2}:\d{2}", f["session_time"]):
+            f["session_time"] = ""
+        if f["deposit_link"] and not re.match(r"https?://", f["deposit_link"]):
+            f["deposit_link"] = "https://" + f["deposit_link"]
+        with DB_LOCK, db() as c:
+            c.execute("""UPDATE inquiries SET session_date=?, session_time=?, session_location=?, price=?, deposit=?,
+                         deposit_link=? WHERE id=?""",
+                      (f["session_date"], f["session_time"], f["session_location"][:200], f["price"][:40],
+                       f["deposit"][:40], f["deposit_link"][:500], sid))
+        self.redirect(f"/admin/sessions?status={self.session_tab(sid)}&done=session-saved#s{sid}")
+
+    def admin_session_pay(self, sid, form):
+        col = {"deposit": "deposit_paid", "full": "paid_full"}.get(form.get("what", ""))
+        if not col:
+            return self.not_found()
+        today = time.strftime("%Y-%m-%d")
+        with DB_LOCK, db() as c:
+            if form.get("undo"):
+                c.execute(f"UPDATE inquiries SET {col}=NULL WHERE id=?", (sid,))
+            else:
+                c.execute(f"UPDATE inquiries SET {col}=? WHERE id=?", (today, sid))
+                if col == "paid_full":  # paid in full covers the deposit too
+                    c.execute("UPDATE inquiries SET deposit_paid=? WHERE id=? AND deposit_paid IS NULL", (today, sid))
+        self.redirect(f"/admin/sessions?status={self.session_tab(sid)}&done=payment-saved#s{sid}")
+
+    def session_tab(self, sid):
+        with db() as c:
+            r = c.execute("SELECT status FROM inquiries WHERE id=?", (sid,)).fetchone()
+        status = r["status"] if r else ""
+        return "booked" if status == "booked" else "open" if status in ("new", "contacted") else "all"
 
     def admin_csv(self):
         with db() as c:
@@ -1240,13 +1350,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- admin: emails
     CONTEXT_KEYS = ("inquiry", "client", "booking", "gallery")
+    FILL_KEYS = ("date", "time", "location", "deposit", "deposit_link")  # typed on the email screen
 
     def email_context(self, q):
         """Who an email goes to and the values its template can use, from ?inquiry= / client= / booking= / gallery=."""
         b = CFG["business"]
         site = CFG["server"]["site_url"].rstrip("/")
         ctx = {"to": "", "who": "", "client_id": None, "inquiry_id": None, "back": "/admin/clients", "hint": "",
-               "ids": {k: q[k] for k in self.CONTEXT_KEYS if (q.get(k) or "").strip()}}
+               "ids": {k: q[k] for k in self.CONTEXT_KEYS if (q.get(k) or "").strip()},
+               "raw": {"deposit": b.get("deposit", ""), "deposit_link": b.get("deposit_link", "")}}
         v = {"photographer": b["photographer"], "business": b["name"], "business_email": b["email"],
              "business_phone": b.get("phone", ""), "site": site, "gallery_link": f"{site}/gallery"}
         with db() as c:
@@ -1254,9 +1366,13 @@ class Handler(BaseHTTPRequestHandler):
                 r = c.execute("SELECT * FROM inquiries WHERE id=?", (int(q["inquiry"]),)).fetchone()
                 if r:
                     ctx.update(to=r["email"], who=r["name"], inquiry_id=r["id"], client_id=r["client_id"],
-                               back="/admin/inquiries")
+                               back=f"/admin/sessions#s{r['id']}")
                     v.update(name=r["name"], session_type=(r["session_type"] or "session").lower(),
-                             location=r["location"])
+                             location=r["session_location"] or r["location"], price=r["price"])
+                    ctx["raw"].update({k: val for k, val in [
+                        ("date", r["session_date"]), ("time", r["session_time"]),
+                        ("location", r["session_location"] or r["location"]),
+                        ("deposit", r["deposit"]), ("deposit_link", r["deposit_link"])] if val})
                     if r["dates"]:
                         ctx["hint"] = f"They asked for: {r['dates']}"
             if q.get("booking", "").isdigit():
@@ -1281,13 +1397,16 @@ class Handler(BaseHTTPRequestHandler):
                         ctx["back"] = f"/admin/clients/{r['id']}"
         name = v.get("name", "")
         v["first_name"] = name if name.lower().startswith("the ") else name.split(" ")[0] if name else ""
-        # Rachel's own fill-ins on the compose page
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", q.get("date", "")):
-            v["date"] = nice_date(q["date"])
-        if re.fullmatch(r"\d{1,2}:\d{2}", q.get("time", "")):
-            v["time"] = nice_time(q["time"])
-        if q.get("location", "").strip():
-            v["location"] = q["location"].strip()[:200]
+        # Saved session details, then anything Rachel typed on the email screen
+        raw = ctx["raw"]
+        raw.update({k: q[k].strip() for k in self.FILL_KEYS if (q.get(k) or "").strip()})
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw.get("date", "")):
+            v["date"] = nice_date(raw["date"])
+        if re.fullmatch(r"\d{1,2}:\d{2}", raw.get("time", "")):
+            v["time"] = nice_time(raw["time"])
+        for k, n in (("location", 200), ("deposit", 40), ("deposit_link", 500)):
+            if raw.get(k):
+                v[k] = raw[k][:n]
         v.setdefault("session_type", "session")
         ctx["values"] = v
         return ctx
@@ -1308,14 +1427,17 @@ class Handler(BaseHTTPRequestHandler):
         to = ctx["to"] if to is None else to
         ids = "".join(f'<input type="hidden" name="{k}" value="{esc(val)}">' for k, val in ctx["ids"].items())
         uses = set(unfilled(tpl["subject"] + tpl["body"]))
+        raw = ctx["raw"]
+        fill_in = "".join(f'<input type="hidden" name="{k}" value="{esc(raw[k])}">' for k in self.FILL_KEYS
+                          if raw.get(k) and k in uses)
         fields = ""
-        if "date" in uses and "booking" not in ctx["ids"]:
-            fields += f'<label>Date<input type="date" name="date" value="{esc(q.get("date", ""))}"></label>'
-        if "time" in uses and "booking" not in ctx["ids"]:
-            fields += f'<label>Time<input type="time" name="time" value="{esc(q.get("time", ""))}"></label>'
-        if "location" in uses and "booking" not in ctx["ids"]:
-            fields += (f'<label class="full">Location<input name="location" maxlength="200" '
-                       f'value="{esc(q.get("location") or v.get("location") or "")}"></label>')
+        if "booking" not in ctx["ids"]:
+            for k, label, attrs in (("date", "Date", 'type="date"'), ("time", "Time", 'type="time"'),
+                                    ("location", "Location", 'maxlength="200"'), ("deposit", "Deposit amount", 'maxlength="40"'),
+                                    ("deposit_link", "Deposit link", 'type="url" maxlength="500"')):
+                if k in uses:
+                    wide = ' class="full"' if k in ("location", "deposit_link") else ""
+                    fields += f'<label{wide}>{label}<input name="{k}" {attrs} value="{esc(raw.get(k, ""))}"></label>'
         opts = "".join(f'<option value="{t["key"]}"{" selected" if t["key"] == tpl["key"] else ""}>{esc(t["name"])}</option>'
                        for t in tpls)
         left = unfilled(subject + body)
@@ -1340,7 +1462,7 @@ class Handler(BaseHTTPRequestHandler):
     <div class="full row-actions"><button class="btn ghost small">{'Fill in' if fields else 'Use this template'}</button></div>
   </form>
   <form method="post" action="/admin/email/send" class="form card-pad">
-    {ids}<input type="hidden" name="template" value="{tpl['key']}">
+    {ids}{fill_in}<input type="hidden" name="template" value="{tpl['key']}">
     <label class="full">To<input name="to" type="email" required maxlength="200" value="{esc(to)}"></label>
     <label class="full">Subject<input name="subject" required maxlength="200" value="{esc(subject)}"></label>
     <label class="full">Message<textarea name="body" rows="14" required maxlength="20000">{esc(body)}</textarea></label>
@@ -1351,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
         self.admin_page(body_html, title, "emails", crumbs=[("Emails", "/admin/emails"), (title, None)])
 
     def admin_email_send(self, form):
-        q = {k: form[k] for k in (*self.CONTEXT_KEYS, "template") if form.get(k)}
+        q = {k: form[k] for k in (*self.CONTEXT_KEYS, *self.FILL_KEYS, "template") if form.get(k)}
         to, subject, body = (form.get("to") or "").strip(), (form.get("subject") or "").strip(), form.get("body") or ""
         if not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", to):
             return self.admin_compose(q, "Please enter one valid email address.", subject, body, to)
@@ -1373,9 +1495,19 @@ class Handler(BaseHTTPRequestHandler):
                 r = c.execute("SELECT * FROM inquiries WHERE id=?", (ctx["inquiry_id"],)).fetchone()
                 cid = client_for_inquiry(c, r)
                 c.execute("UPDATE inquiries SET status='booked' WHERE id=?", (r["id"],))
+                raw = ctx["raw"]
+                saved = {"session_date": raw.get("date") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw.get("date", "")) else None,
+                         "session_time": raw.get("time") if re.fullmatch(r"\d{1,2}:\d{2}", raw.get("time", "")) else None,
+                         "session_location": raw.get("location"), "deposit": raw.get("deposit"),
+                         "deposit_link": raw.get("deposit_link")}
+                for col, val in saved.items():
+                    if val:
+                        c.execute(f"UPDATE inquiries SET {col}=? WHERE id=?", (val[:500], r["id"]))
                 c.execute("UPDATE clients SET status='active' WHERE id=? AND status='lead'", (cid,))
                 c.execute("UPDATE email_log SET client_id=? WHERE inquiry_id=? AND client_id IS NULL", (cid, r["id"]))
-            ctx["client_id"], done = cid, "booking-confirmed"
+            return self.redirect(f"/admin/sessions?status=booked&done=booking-confirmed#s{r['id']}")
+        if ctx["inquiry_id"]:
+            return self.redirect(f"/admin/sessions?status=all&done={done}#s{ctx['inquiry_id']}")
         back = f"/admin/clients/{ctx['client_id']}" if ctx["client_id"] else ctx["back"]
         self.redirect(f"{back}?done={done}")
 
@@ -1441,7 +1573,7 @@ class Handler(BaseHTTPRequestHandler):
   {editor}
   <section>
     <div class="admin-head"><h2>Templates</h2></div>
-    <p class="muted">Starting points for the emails you send from Inquiries, Clients, Galleries and Mini sessions.</p>
+    <p class="muted">Starting points for the emails you send from Sessions, Clients, Galleries and Mini sessions.</p>
     <div class="table-wrap"><table class="data"><thead><tr><th>Template</th><th>Subject</th><th></th></tr></thead>
     <tbody>{rows}</tbody></table></div>
   </section>
@@ -1495,7 +1627,7 @@ class Handler(BaseHTTPRequestHandler):
         table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Email</th><th>Phone</th>'
                  f'<th>Family size</th><th>Family details</th><th>Status</th><th class="num">Galleries</th></tr></thead>'
                  f'<tbody>{trs}</tbody></table></div>'
-                 if rows else '<p class="muted">No clients yet. Add one, or use “Add to clients” on an inquiry.</p>')
+                 if rows else '<p class="muted">No clients yet. Add one, or use “Add to clients” on a session.</p>')
         body = f"""
   <div class="admin-head"><h1>Clients</h1><a class="btn small" href="/admin/clients/new">Add client</a></div>
   <form class="search" method="get" action="/admin/clients">
@@ -1544,9 +1676,12 @@ class Handler(BaseHTTPRequestHandler):
                 f'<span class="muted">· {len(g["photos"])} photos{" · expired" if g["expired"] else ""}</span></li>'
                 for g in galleries) or '<li class="muted">No galleries yet.</li>'
             inq_rows = "".join(
-                f'<li>{esc(i["created"])} · {esc(i["session_type"])} <span class="tag">{esc(i["status"])}</span>'
+                f'<li><a href="/admin/sessions?status=all#s{i["id"]}">{esc(i["session_type"])}</a> · '
+                f'{esc(nice_date(i["session_date"])) if i["session_date"] else "requested " + esc(i["created"][:10])} '
+                f'<span class="tag">{esc(i["status"])}</span>'
+                f'{" <span class=tag>paid in full</span>" if i["paid_full"] else " <span class=tag>deposit paid</span>" if i["deposit_paid"] else ""}'
                 f'{snippet(i["message"])}</li>'
-                for i in inquiries) or '<li class="muted">No inquiries.</li>'
+                for i in inquiries) or '<li class="muted">No sessions yet.</li>'
             inq_rows += "".join(
                 f'<li><a href="/admin/minis/{b["eid"]}">{esc(b["title"])}</a> · {esc(nice_date(b["date"]))}, '
                 f'{nice_time(b["slot"])}{" <span class=tag>cancelled</span>" if b["status"] != "booked" else ""}</li>'
@@ -1555,7 +1690,7 @@ class Handler(BaseHTTPRequestHandler):
   <div class="admin-cols">
     <section><div class="admin-head"><h2>Galleries</h2>
       <a class="btn small" href="/admin/galleries/new?client={cid}">New gallery</a></div><ul class="plain">{gal_rows}</ul></section>
-    <section><h2>Inquiries &amp; bookings</h2><ul class="plain">{inq_rows}</ul></section>
+    <section><h2>Sessions &amp; bookings</h2><ul class="plain">{inq_rows}</ul></section>
   </div>
   <form method="post" action="/admin/clients/{cid}/delete" data-confirm="Delete {esc(r['name'])} from your client list? Their galleries are kept.">
     <button class="btn ghost small danger">Delete client</button></form>"""
@@ -1611,8 +1746,13 @@ class Handler(BaseHTTPRequestHandler):
   {table}"""
         self.admin_page(body, "Galleries", "galleries", notice)
 
-    def admin_gallery_form(self, slug, client_param, notice):
-        g = None
+    def admin_gallery_form(self, slug, client_param, notice, session_param=""):
+        g, session = None, None
+        if not slug and session_param.isdigit():
+            with db() as c:
+                session = c.execute("SELECT * FROM inquiries WHERE id=?", (int(session_param),)).fetchone()
+            if session and session["client_id"]:
+                client_param = str(session["client_id"])
         if slug:
             g = read_gallery(slug)
             if not g:
@@ -1622,12 +1762,17 @@ class Handler(BaseHTTPRequestHandler):
         copts = '<option value="">No client</option>' + "".join(
             f'<option value="{cid}"{" selected" if cid == current else ""}>{esc(n)}</option>' for cid, n in names.items())
         default_title = ""
-        if not g and current in names:
+        if session:
+            when = time.strftime("%B %Y", time.strptime(session["session_date"], "%Y-%m-%d")) \
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", session["session_date"] or "") else time.strftime("%B %Y")
+            default_title = f"{session['name']} · {session['session_type']} · {when}"
+        elif not g and current in names:
             default_title = f"{names[current]} · {time.strftime('%B %Y')}"
         v = (lambda k, d="": esc(g[k]) if g else esc(d))
         form = f"""
   <form method="post" action="/admin/galleries/save" class="form card-pad">
     <input type="hidden" name="slug" value="{esc(slug or '')}">
+    {f'<input type="hidden" name="session" value="{session["id"]}"><p class="muted full">For the {esc(session["session_type"])} with {esc(session["name"])}. Saving links this gallery to that session and their client record.</p>' if session else ''}
     <label class="full">Gallery title<input name="title" value="{v('title', default_title)}" required maxlength="120" placeholder="The Smith Family · Fall 2026"></label>
     <label>Client<select name="client_id">{copts}</select></label>
     <label>Access code<input name="code" value="{v('code', new_gallery_code())}" required maxlength="60" autocomplete="off"></label>
@@ -1683,7 +1828,13 @@ class Handler(BaseHTTPRequestHandler):
                         crumbs=[("Galleries", "/admin/galleries"), (title, None)])
 
     def admin_gallery_save(self, form):
-        f = {k: (form.get(k) or "").strip() for k in ("slug", "title", "client_id", "code", "expires", "note")}
+        f = {k: (form.get(k) or "").strip() for k in ("slug", "title", "client_id", "code", "expires", "note", "session")}
+        session = None
+        if f["session"].isdigit() and not f["slug"]:
+            with DB_LOCK, db() as c:
+                session = c.execute("SELECT * FROM inquiries WHERE id=?", (int(f["session"]),)).fetchone()
+                if session and not f["client_id"].isdigit():
+                    f["client_id"] = str(client_for_inquiry(c, session))
         code = re.sub(r"\s+", "-", f["code"])[:60]
         if not f["title"] or not code:
             return self.redirect("/admin/galleries/new")
@@ -1707,6 +1858,9 @@ class Handler(BaseHTTPRequestHandler):
         write_gallery_ini(folder, {"title": f["title"][:120], "code": code, "note": f["note"][:1000],
                                    "expires": f["expires"], "created": created,
                                    "client_id": f["client_id"] if f["client_id"].isdigit() else ""})
+        if session:
+            with DB_LOCK, db() as c:
+                c.execute("UPDATE inquiries SET gallery=? WHERE id=?", (slug, session["id"]))
         self.redirect(f"/admin/galleries/{slug}?done=gallery-saved")
 
     def admin_gallery_delete(self, slug, photo):

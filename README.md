@@ -79,9 +79,16 @@ below works from a phone or laptop on the same network. A sidebar on the left
 (a Menu button on phones) takes you between sections, and the **Dashboard**
 shows new inquiries, recent galleries and shortcuts for common jobs.
 
-- **Inquiries:** booking requests from the Book page. Mark each one New →
-  Contacted → Booked → Archived, download them as a spreadsheet, or press
-  **Add to clients** to turn one into a client record.
+- **Sessions:** every request from the Book page, then the session itself.
+  Move each one through New → Contacted → Booked → Completed → Archived. Open
+  **Session details** to save the date, time, location, price, deposit and a
+  deposit payment link, then tick **Mark deposit paid** and **Mark paid in
+  full** as money comes in (the date is recorded; Undo if you clicked by
+  mistake). **Confirm booking** emails the family with the date, place and
+  deposit link filled in and marks the session Booked. **Create gallery** starts
+  a gallery already named and linked to that family. Set a usual deposit amount
+  and payment link under `[business]` in `config.ini` (`deposit`,
+  `deposit_link`) to have them filled in automatically.
 - **Mini sessions:** set up a mini session day (date, place, start and end
   time, minutes per family, break between families, price, details) and set it
   to **Open**. Families pick a free time at `/minis` and it's theirs; nobody can
@@ -102,7 +109,7 @@ shows new inquiries, recent galleries and shortcuts for common jobs.
   onto the page to upload them. The page gives you a ready-to-send message with
   the link and code. Clients open galleries at `/gallery`.
 - **Emails:** send a client an email from the site. **Confirm booking** and
-  **Reply** on each inquiry, **Send email** on each client, **Email** next to
+  **Email** on each session, **Send email** on each client, **Email** next to
   each mini session booking and **Email the client** on each gallery open a
   ready-written message (booking confirmation, reply, session reminder, gallery
   ready, thank you) with their name, session, date, place or gallery code
