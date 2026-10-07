@@ -57,3 +57,18 @@
 label.toggle { display: flex; align-items: center; gap: .6rem; align-self: end; padding-bottom: .9rem; letter-spacing: .05em; text-transform: none; font-weight: 400; font-size: .95rem; }
 label.toggle input { width: auto; margin: 0; }
 .link-btn.danger { color: #9B3D22; }
+
+/* Photo crop / focus point dialog */
+.photo-tool { border: 0; border-radius: var(--radius); padding: 1.4rem; width: min(960px, 94vw); max-height: 94vh; background: var(--paper); }
+.photo-tool::backdrop { background: rgba(39, 49, 44, .6); }
+.photo-tool h2 { margin: 0 0 .3rem; }
+.photo-tool .hint { margin: 0 0 1rem; min-height: 1.4em; }
+.pt-stage { position: relative; display: flex; justify-content: center; background: #27312C; border-radius: var(--radius); touch-action: none; user-select: none; margin-bottom: 1rem; }
+.pt-stage img { display: block; max-width: 100%; max-height: 66vh; pointer-events: none; }
+.pt-frame { position: absolute; box-shadow: 0 0 0 9999px rgba(39, 49, 44, .62); outline: 2px solid var(--cream); cursor: move; }
+.pt-stage { overflow: hidden; }
+.pt-handle { position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px; background: var(--terracotta); border: 2px solid var(--cream); border-radius: 50%; cursor: nwse-resize; }
+.pt-dot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 3px solid #fff; border-radius: 50%; background: rgba(194, 123, 87, .75); box-shadow: 0 0 0 2px rgba(0, 0, 0, .35); pointer-events: none; display: none; }
+.photo-tool.focus-mode .pt-frame { display: none; }
+.photo-tool.focus-mode .pt-dot { display: block; }
+.photo-tool.focus-mode .pt-stage { cursor: crosshair; }

@@ -85,13 +85,20 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "review-saved": "Testimonial saved.", "review-added": "Testimonial added.",
            "review-deleted": "Testimonial deleted."}
 PHOTO_HINTS = {
-    "hero.jpg": "Home page banner · wide, about 2000×1250",
-    "og-image.jpg": "Preview when the site is shared · 1200×630",
-    "about-rachel.jpg": "Rachel's portrait · tall, about 900×1125",
-    "session-mini.jpg": "Mini session card · 4:3", "session-family.jpg": "Family session card · 4:3",
-    "session-extended.jpg": "Extended family card · 4:3", "session-newborn.jpg": "Newborn card · 4:3",
-    "location-patapsco.jpg": "Patapsco Valley page · wide", "location-ellicott-city.jpg": "Ellicott City page · wide",
-    "location-sykesville.jpg": "Sykesville page · wide",
+    "hero.jpg": "Home page banner", "og-image.jpg": "Preview when the site is shared",
+    "about-rachel.jpg": "Rachel's portrait",
+    "session-mini.jpg": "Mini session card", "session-family.jpg": "Family session card",
+    "session-extended.jpg": "Extended family card", "session-newborn.jpg": "Newborn card",
+    "location-patapsco.jpg": "Patapsco Valley page", "location-ellicott-city.jpg": "Ellicott City page",
+    "location-sykesville.jpg": "Sykesville page",
+}
+# Size each page photo is cropped to when it's replaced in the admin (width, height)
+PHOTO_SHAPES = {
+    "hero.jpg": (2400, 1350), "og-image.jpg": (1200, 630), "about-rachel.jpg": (1200, 1500),
+    "session-mini.jpg": (1600, 1200), "session-family.jpg": (1600, 1200),
+    "session-extended.jpg": (1600, 1200), "session-newborn.jpg": (1600, 1200),
+    "location-patapsco.jpg": (2000, 1250), "location-ellicott-city.jpg": (2000, 1250),
+    "location-sykesville.jpg": (2000, 1250),
 }
 
 try:  # optional: faster gallery previews when Pillow (apt install python3-pil) is present
@@ -432,10 +439,38 @@ def render(body, title, description="", path="/", extra_head="", noindex=False):
             body = re.sub(r"<section(?:(?!</section>).)*?\{\{testimonials\}\}.*?</section>\s*", "", body, flags=re.S)
     values["content"] = fill(body, values)
     layout = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
-    return version_photo_urls(fill(layout, values))
+    return version_photo_urls(focus_css_link(fill(layout, values)))
 
 
 PHOTOS = STATIC / "img" / "photos"
+
+
+FOCUS_FILE = DATA / "photo_focus.json"
+
+
+def photo_focus():
+    """{photo name: [x%, y%]}: the spot that stays in view when a screen crops the photo."""
+    try:
+        return json.loads(FOCUS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_photo_focus(focus):
+    tmp = FOCUS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(focus))
+    tmp.replace(FOCUS_FILE)
+
+
+def photo_focus_css():
+    """Stylesheet that keeps each photo's focus point in view wherever it's cropped to fit."""
+    return "".join(f'img[src^="/static/img/photos/{n}"] {{ object-position: {x:g}% {y:g}%; }}\n'
+                   for n, (x, y) in sorted(photo_focus().items()) if re.fullmatch(r"[\w.-]+", n))
+
+
+def focus_css_link(page):
+    v = int(FOCUS_FILE.stat().st_mtime) if FOCUS_FILE.exists() else 0
+    return page.replace("</head>", f'  <link rel="stylesheet" href="/photo-focus.css?v={v}">\n</head>', 1)
 
 
 def version_photo_urls(page):
@@ -874,7 +909,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+                         "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; "
                          "script-src 'self'; font-src 'self'; form-action 'self'; "
                          "frame-ancestors 'none'; base-uri 'self'")
 
@@ -948,6 +983,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p.startswith("/static/"):
                 return self.serve_file(STATIC, p[len("/static/"):], cache=True)
+            if p == "/photo-focus.css":
+                return self.send(200, photo_focus_css(), "text/css; charset=utf-8",
+                                 {"Cache-Control": "public, max-age=31536000, immutable"})
             if p in ("/favicon.ico", "/robots.txt", "/sitemap.xml"):
                 return {"/favicon.ico": lambda: self.serve_file(STATIC, "favicon.ico", cache=True),
                         "/robots.txt": self.robots, "/sitemap.xml": self.sitemap}[p]()
@@ -1161,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
             "admin_user": esc(getattr(self, "admin_user", CFG["admin"]["username"])), "content": body,
         })
         layout = (TEMPLATES / "admin.html").read_text(encoding="utf-8")
-        self.send(200, version_photo_urls(fill(layout, values)), headers={"Cache-Control": "no-store"})
+        self.send(200, version_photo_urls(focus_css_link(fill(layout, values))), headers={"Cache-Control": "no-store"})
 
     def query(self):
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
@@ -1254,6 +1292,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_gallery_delete(m.group(1), form.get("name") if m.group(2) == "photo-delete" else None)
         if p == "/admin/photos/delete":
             return self.admin_photo_delete(form.get("name", ""))
+        if p == "/admin/photos/focus":
+            return self.admin_photo_focus(form)
         if p == "/admin/photos/move":
             return self.admin_photo_move(form.get("name", ""), form.get("dir", ""))
         if p == "/admin/minis/save":
@@ -2178,11 +2218,21 @@ class Handler(BaseHTTPRequestHandler):
                     hits.append("Home" if rel == "index" else rel.replace("-", " ").replace("/", " › ").title())
             return ", ".join(sorted(hits)) or "Not used on any page"
 
+        focus = photo_focus()
+
         def card(name, portfolio=False, first=False, last=False):
             f = PHOTOS / name
             kb = f.stat().st_size / 1024
             size = f"{kb / 1024:.1f} MB" if kb >= 1024 else f"{kb:.0f} KB"
             hint = PHOTO_HINTS.get(name, "Portfolio photo, any shape" if portfolio else "")
+            shape = PHOTO_SHAPES.get(name)
+            if shape:
+                hint += f" · {shape[0]}×{shape[1]}"
+            crop = f' data-crop="{shape[0]}x{shape[1]}"' if shape else ""
+            xy = focus.get(name, [50, 50])
+            focus_btn = "" if portfolio or name == "og-image.jpg" else (
+                f'<button type="button" class="link-btn" data-focus="{esc(name)}" data-xy="{xy[0]:g},{xy[1]:g}" '
+                f'data-src="/static/img/photos/{esc(name)}?v={int(f.stat().st_mtime)}">Focus point</button>')
             move = ""
             if portfolio:
                 move = "".join(
@@ -2200,7 +2250,8 @@ class Handler(BaseHTTPRequestHandler):
         <span class="muted small">{esc(hint)}{' · ' if hint else ''}{size}</span>
         {'' if portfolio else f'<span class="muted small">Used on: {esc(used_on(name))}</span>'}
         <div class="row-actions">
-          <label class="btn ghost small" data-upload="/admin/upload?kind=site&amp;name={quote(name)}">Replace<input type="file" accept="image/*" hidden></label>
+          <label class="btn ghost small" data-upload="/admin/upload?kind=site&amp;name={quote(name)}"{crop}>Replace<input type="file" accept="image/*" hidden></label>
+          {focus_btn}
           {move}
         </div>
         <div class="progress" aria-live="polite"></div>
@@ -2212,7 +2263,9 @@ class Handler(BaseHTTPRequestHandler):
                       if p.is_file() and p.suffix.lower() in IMAGE_EXT and p.name not in port)
         body = f"""
   <div class="admin-head"><h1>Site photos</h1></div>
-  <p class="muted">Replace a photo to update it everywhere it appears. Use a JPEG for .jpg photos. Changes show up right away.</p>
+  <p class="muted">Replace a photo to update it everywhere it appears; you'll get to crop it to the right shape first.
+     Screens of different sizes trim the edges of wide photos, so use <strong>Focus point</strong> to pick the part
+     that should always stay in view (a face, say). Changes show up right away.</p>
   <h2>Portfolio <span class="muted">({len(port)})</span></h2>
   <p class="muted">These appear on the Portfolio page in this order; the first four also show on the home page.</p>
   <div class="dropzone" data-upload="/admin/upload?kind=portfolio">
@@ -2230,6 +2283,25 @@ class Handler(BaseHTTPRequestHandler):
             trash.mkdir(parents=True, exist_ok=True)
             (PHOTOS / name).rename(trash / name)
         self.redirect("/admin/photos?done=photo-removed")
+
+    def admin_photo_focus(self, form):
+        name = form.get("name", "")
+        try:
+            x, y = (round(float(form.get(k, "")), 1) for k in ("x", "y"))
+        except ValueError:
+            x = y = -1.0
+        if not (0 <= x <= 100 and 0 <= y <= 100):
+            return self.send(400, json.dumps({"ok": False, "error": "Bad focus point."}), "application/json")
+        if name not in os.listdir(PHOTOS):
+            return self.send(404, json.dumps({"ok": False, "error": "Photo not found."}), "application/json")
+        with DB_LOCK:
+            focus = photo_focus()
+            if (x, y) == (50.0, 50.0):
+                focus.pop(name, None)
+            else:
+                focus[name] = [x, y]
+            save_photo_focus(focus)
+        self.send(200, json.dumps({"ok": True}), "application/json")
 
     def admin_photo_move(self, name, direction):
         names = portfolio_photos()
@@ -2305,6 +2377,10 @@ class Handler(BaseHTTPRequestHandler):
                 trash = DATA / "trash" / time.strftime("%Y%m%d-%H%M%S")
                 trash.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(dest, trash / raw_name)  # keep the old one, just in case
+                with DB_LOCK:  # a new photo starts with its focus in the middle
+                    focus = photo_focus()
+                    if focus.pop(raw_name, None):
+                        save_photo_focus(focus)
             elif kind == "portfolio":
                 nums = [int(m.group(1)) for n in portfolio_photos() if (m := re.match(r"portfolio-(\d+)", n))]
                 dest = PHOTOS / f"portfolio-{(max(nums) + 1 if nums else 1):02d}{ext}"

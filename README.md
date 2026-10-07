@@ -119,7 +119,11 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   **Emails → Templates**; everything sent is listed there and on each client's
   page. Until `[email]` is set up, Send opens your own email app instead.
 - **Site photos:** replace any photo on the site (hero, session cards, location
-  pages, Rachel's portrait) and it updates everywhere at once. Add, remove and
+  pages, Rachel's portrait) and it updates everywhere at once. Replacing opens
+  a cropper set to that photo's shape (hero 2400×1350, cards 1600×1200,
+  locations 2000×1250, portrait 1200×1500). **Focus point** picks the spot that
+  stays in view when phones and wide screens trim the edges (saved in
+  `data/photo_focus.json`). Add, remove and
   reorder portfolio photos; the first four also appear on the home page.
 - **Site text:** edit the words on every public page (headings, paragraphs,
   prices, list items, and each page's Google title and description), plus the
