@@ -60,7 +60,7 @@ ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("sessions", "/admin/ses
                   ("minis", "/admin/minis", "Mini sessions"), ("clients", "/admin/clients", "Clients"),
                   ("galleries", "/admin/galleries", "Galleries"),
                   ("emails", "/admin/emails", "Emails"),
-                  ("photos", "/admin/photos", "Site photos")]
+                  ("photos", "/admin/photos", "Site photos"), ("content", "/admin/content", "Site text")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -70,6 +70,7 @@ ADMIN_ICONS = {
     "galleries": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="M3 17l5-4.5 4 3.5 3-2.5 6 4.5"/>',
     "photos": '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
     "emails": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3.5 6l8.5 7 8.5-7"/>',
+    "content": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
@@ -79,7 +80,10 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "email-sent": "Email sent.", "booking-confirmed": "Confirmation sent. The session is marked booked.",
            "session-saved": "Session details saved.", "payment-saved": "Payment updated.",
            "template-saved": "Template saved.", "test-sent": "Test email sent. Check the inbox.",
-           "test-failed": "The test email didn't go through. Check the [email] settings in config.ini."}
+           "test-failed": "The test email didn't go through. Check the [email] settings in config.ini.",
+           "text-saved": "Saved. The page shows the new text now.",
+           "review-saved": "Testimonial saved.", "review-added": "Testimonial added.",
+           "review-deleted": "Testimonial deleted."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner · wide, about 2000×1250",
     "og-image.jpg": "Preview when the site is shared · 1200×630",
@@ -198,6 +202,20 @@ with db() as _c:
     _c.execute("""CREATE TABLE IF NOT EXISTS email_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, to_addr TEXT, subject TEXT, body TEXT,
         kind TEXT, client_id INTEGER, inquiry_id INTEGER, status TEXT, error TEXT)""")
+    # text admins have changed on the public pages: key is "<page>#<n>" (n = data-edit number),
+    # "<page>#title" or "<page>#description"
+    _c.execute("""CREATE TABLE IF NOT EXISTS site_text (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL, updated TEXT, updated_by TEXT)""")
+    _new_reviews = not _c.execute("SELECT 1 FROM sqlite_master WHERE name='testimonials'").fetchone()
+    _c.execute("""CREATE TABLE IF NOT EXISTS testimonials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, quote TEXT NOT NULL,
+        name TEXT, sort INTEGER NOT NULL DEFAULT 0, shown INTEGER NOT NULL DEFAULT 1)""")
+    if _new_reviews:  # start with the placeholder reviews the home page shipped with
+        _c.executemany("INSERT INTO testimonials (created, quote, name, sort) VALUES (?,?,?,?)", [
+            (time.strftime("%Y-%m-%d %H:%M"), q, "Sample · replace with a real review", n) for n, q in enumerate([
+                "Sample review: Rachel had our toddler giggling within minutes. These are the first family photos where we all look like ourselves.",
+                "Sample review: The session felt like a walk in the park with a friend, and the gallery made my mom cry happy tears.",
+                "Sample review: Easy to book, so patient with our kids, and the photos were ready sooner than we expected."])])
     # one live booking per slot, enforced by the database itself
     _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
@@ -254,8 +272,8 @@ def esc(s):
     return html.escape(str(s or ""), quote=True).replace("{", "&#123;").replace("}", "&#125;")
 
 
-def read_page(path):
-    """Return (meta, body) for a page file with an optional <!-- key: value --> header."""
+def read_page_file(path):
+    """Return (meta, body) for a page file with an optional <!-- key: value --> header, as written."""
     text = path.read_text(encoding="utf-8")
     meta = {}
     m = re.match(r"\s*<!--(.*?)-->", text, re.S)
@@ -266,6 +284,78 @@ def read_page(path):
                 meta[k.strip().lower()] = v.strip()
         text = text[m.end():]
     return meta, text
+
+
+def read_page(path):
+    """Like read_page_file, with any text changed from the admin's Site text page applied."""
+    meta, text = read_page_file(path)
+    try:
+        name = path.resolve().relative_to(PAGES.resolve()).with_suffix("").as_posix()
+    except ValueError:
+        return meta, text
+    saved = site_text(name)
+    if saved:
+        for k in ("title", "description"):
+            if saved.get(k):
+                meta[k] = saved[k]
+        text = EDITABLE.sub(lambda m: (m.group(0) if m.group(3) not in saved else
+                                       f"<{m.group(1)}{m.group(2)}>{text_to_html(saved[m.group(3)])}</{m.group(1)}>"), text)
+    return meta, text
+
+
+def content_pages():
+    """Pages with editable text, as {name: label}, in the order the admin lists them."""
+    first = ["index", "about", "sessions", "book", "portfolio", "locations/index"]
+    last = ["gallery", "thanks", "404"]
+    found = {f.relative_to(PAGES).with_suffix("").as_posix(): f for f in PAGES.rglob("*.html")}
+    names = ([n for n in first if n in found] + sorted(n for n in found if n not in first + last)
+             + [n for n in last if n in found])
+    labels = {"index": "Home", "locations/index": "Locations", "404": "Page not found", "thanks": "Thank you",
+              "gallery": "Gallery login"}
+    out = {}
+    for n in names:
+        if 'data-edit="' in found[n].read_text(encoding="utf-8"):
+            out[n] = labels.get(n, n.split("/")[-1].replace("-", " ").title())
+    return out
+
+
+# Page text admins can edit: elements marked data-edit="<n>" in pages/*.html
+EDITABLE = re.compile(r'<(h1|h2|h3|p|li|cite|figcaption)((?:\s[^>]*?)?) data-edit="(\d+)"([^>]*)>(.*?)</\1>', re.S)
+
+
+def site_text(page):
+    with db() as c:
+        rows = c.execute("SELECT key, value FROM site_text WHERE key LIKE ?", (page + "#%",)).fetchall()
+    return {r["key"].split("#", 1)[1]: r["value"] for r in rows if r["key"].split("#", 1)[0] == page}
+
+
+def html_to_text(inner):
+    """Page HTML -> the plain text shown in the editor (*italic*, **bold**, line breaks)."""
+    t = re.sub(r"\s+", " ", inner).strip()
+    t = re.sub(r"\s*<br\s*/?>\s*", "\n", t)
+    t = re.sub(r"</?strong>", "**", t)
+    t = re.sub(r"</?em>", "*", t)
+    return html.unescape(re.sub(r"<[^>]+>", "", t))
+
+
+def text_to_html(text):
+    t = esc(text.strip())
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    t = re.sub(r"\*(.+?)\*", r"<em>\1</em>", t)
+    return re.sub(r"\r?\n", "<br>", t)
+
+
+def testimonials(shown_only=True):
+    with db() as c:
+        return c.execute("SELECT * FROM testimonials" + (" WHERE shown=1" if shown_only else "")
+                         + " ORDER BY sort, id").fetchall()
+
+
+def testimonials_html():
+    return "\n".join(
+        f'      <blockquote class="quote"><p>“{text_to_html(r["quote"].strip().strip(chr(34) + "“”"))}”</p>'
+        + (f'<cite>{esc(r["name"])}</cite>' if (r["name"] or "").strip() else "") + "</blockquote>"
+        for r in testimonials())
 
 
 def business_vars():
@@ -336,6 +426,10 @@ def render(body, title, description="", path="/", extra_head="", noindex=False):
     })
     if "{{portfolio_" in body:
         values.update(portfolio_values())
+    if "{{testimonials}}" in body:
+        values["testimonials"] = testimonials_html()
+        if not values["testimonials"]:  # no reviews to show: drop the whole section
+            body = re.sub(r"<section(?:(?!</section>).)*?\{\{testimonials\}\}.*?</section>\s*", "", body, flags=re.S)
     values["content"] = fill(body, values)
     layout = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
     return version_photo_urls(fill(layout, values))
@@ -1119,6 +1213,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_mini_form(int(m.group(1)), notice)
         if p == "/admin/emails":
             return self.admin_emails(q.get("edit", ""), notice)
+        if p == "/admin/content":
+            return self.admin_content(q.get("page", "index"), notice)
         if p == "/admin/email":
             return self.admin_compose(q)
         self.not_found()
@@ -1171,6 +1267,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_email_send(form)
         if p == "/admin/emails/template":
             return self.admin_template_save(form)
+        if p == "/admin/content/save":
+            return self.admin_content_save(form)
+        if p == "/admin/testimonials/save":
+            return self.admin_testimonial_save(form)
         if p == "/admin/emails/test":
             err = send_mail(f"Test email from {CFG['business']['name']}",
                             "This is a test from your website. Email sending works!",
@@ -1929,6 +2029,142 @@ class Handler(BaseHTTPRequestHandler):
             if thumb.is_file():
                 thumb.unlink()
         self.redirect(f"/admin/galleries/{slug}?done=photo-removed")
+
+    # ---- admin: site text and testimonials
+    def admin_content(self, page, notice):
+        pages = content_pages()
+        tabs = "".join(f'<a href="/admin/content?page={k}"{CURRENT if k == page else ""}>{esc(label)}</a>'
+                       for k, label in [*pages.items(), ("testimonials", "Testimonials")])
+        head = f"""
+  <div class="admin-head"><h1>Site text</h1></div>
+  <nav class="tabs">{tabs}</nav>"""
+        if page == "testimonials":
+            return self.admin_page(head + self.testimonials_editor(), "Testimonials", "content", notice)
+        if page not in pages:
+            return self.not_found()
+        f = PAGES / f"{page}.html"
+        meta, body = read_page_file(f)
+        saved = site_text(page)
+        path = "/" + page.removesuffix("index").rstrip("/") if page != "index" else "/"
+
+        def field(name, label, default, rows=None):
+            value = saved.get(name, default)
+            changed = name in saved and saved[name] != default
+            rows = rows or max(1, min(8, len(value) // 70 + 1 + value.count("\n")))
+            orig = f'<span class="was">Changed. Original: {esc(default)}</span>' if changed else ""
+            return (f'<label class="full">{esc(label)}<textarea name="f_{name}" rows="{rows}" maxlength="4000">'
+                    f'{esc(value)}</textarea>{orig}</label>')
+
+        groups = []
+        for chunk in re.split(r"(?=<section)", body):
+            fields = []
+            for m in EDITABLE.finditer(chunk):
+                tag, attrs, n, inner = m.group(1), m.group(2) + m.group(4), m.group(3), m.group(5)
+                cls = re.search(r'class="([^"]*)"', attrs)
+                cls = cls.group(1).split() if cls else []
+                label = ("Small label" if "eyebrow" in cls else "Price" if "price" in cls else
+                         "Intro" if "lede" in cls else {"h1": "Page heading", "h2": "Heading", "h3": "Title",
+                         "li": "List item", "cite": "Name", "figcaption": "Caption"}.get(tag, "Text"))
+                fields.append(field(n, label, html_to_text(inner)))
+            if fields:
+                title = re.search(r"<h[12][^>]*>(.*?)</h[12]>", chunk, re.S)
+                title = html_to_text(title.group(1)).replace("*", "") if title else "Section"
+                groups.append(f'<fieldset class="full card-pad content-group"><legend>{esc(title)}</legend>{"".join(fields)}</fieldset>')
+        content = f"""
+  <p class="muted">Edit the words on each page, then save. Put *stars* around words for <em>italics</em>
+     (the script-style words in headings) and **two stars** for <strong>bold</strong>.
+     Clear a box to go back to the original text. <a href="{path}" target="_blank" rel="noopener">View this page</a></p>
+  <form method="post" action="/admin/content/save" class="form">
+    <input type="hidden" name="page" value="{page}">
+    <fieldset class="full card-pad content-group"><legend>Search &amp; sharing</legend>
+      {field("title", "Page title (browser tab and Google)", meta.get("title", ""), 1)}
+      {field("description", "Description (shown under the title in Google)", meta.get("description", ""), 2)}
+    </fieldset>
+    {"".join(groups)}
+    <div class="full row-actions sticky-save"><button class="btn">Save changes</button></div>
+  </form>"""
+        self.admin_page(head + content, f"Site text: {pages[page]}", "content", notice)
+
+    def admin_content_save(self, form):
+        page = form.get("page", "")
+        if page not in content_pages():
+            return self.not_found()
+        meta, body = read_page_file(PAGES / f"{page}.html")
+        defaults = {m.group(3): html_to_text(m.group(5)) for m in EDITABLE.finditer(body)}
+        defaults.update(title=meta.get("title", ""), description=meta.get("description", ""))
+        now, who = time.strftime("%Y-%m-%d %H:%M"), getattr(self, "admin_user", "")
+        with DB_LOCK, db() as c:
+            for name, default in defaults.items():
+                if f"f_{name}" not in form:
+                    continue
+                value = form[f"f_{name}"].replace("\r\n", "\n").strip()
+                if not value or value == default:
+                    c.execute("DELETE FROM site_text WHERE key=?", (f"{page}#{name}",))
+                else:
+                    c.execute("INSERT INTO site_text (key, value, updated, updated_by) VALUES (?,?,?,?) "
+                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated=excluded.updated, "
+                              "updated_by=excluded.updated_by", (f"{page}#{name}", value, now, who))
+        self.redirect(f"/admin/content?page={page}&done=text-saved")
+
+    def testimonials_editor(self):
+        rows = testimonials(shown_only=False)
+        items = []
+        for i, r in enumerate(rows):
+            items.append(f"""
+    <form method="post" action="/admin/testimonials/save" class="form card-pad" id="t{r['id']}">
+      <input type="hidden" name="id" value="{r['id']}">
+      <label class="full">Review<textarea name="quote" rows="3" maxlength="2000" required>{esc(r['quote'])}</textarea></label>
+      <label>Name<input name="name" maxlength="120" value="{esc(r['name'])}" placeholder="e.g. The Martinez family"></label>
+      <label class="toggle"><input type="checkbox" name="shown" value="1"{" checked" if r['shown'] else ""}> Show on the home page</label>
+      <div class="full row-actions">
+        <button class="btn small" name="do" value="save">Save</button>
+        <button class="link-btn" name="do" value="up"{" disabled" if i == 0 else ""}>Move up</button>
+        <button class="link-btn" name="do" value="down"{" disabled" if i == len(rows) - 1 else ""}>Move down</button>
+        <button class="link-btn danger" name="do" value="delete" data-confirm="Delete this testimonial?">Delete</button>
+      </div>
+    </form>""")
+        return f"""
+  <p class="muted">Reviews shown in the “Kind words” section of the home page, in this order.
+     Ask families before using their words. If none are shown, the section is hidden.</p>
+  {"".join(items) or '<p class="muted">No testimonials yet.</p>'}
+  <form method="post" action="/admin/testimonials/save" class="form card-pad mt-xl">
+    <h2 class="full">Add a testimonial</h2>
+    <label class="full">Review<textarea name="quote" rows="3" maxlength="2000" required></textarea></label>
+    <label>Name<input name="name" maxlength="120" placeholder="e.g. The Martinez family"></label>
+    <input type="hidden" name="shown" value="1">
+    <div class="full row-actions"><button class="btn small" name="do" value="add">Add testimonial</button></div>
+  </form>"""
+
+    def admin_testimonial_save(self, form):
+        do, tid = form.get("do", "save"), form.get("id", "")
+        quote_, name = form.get("quote", "").strip()[:2000], form.get("name", "").strip()[:120]
+        back = "/admin/content?page=testimonials"
+        with DB_LOCK, db() as c:
+            if do == "add":
+                if quote_:
+                    top = c.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM testimonials").fetchone()[0]
+                    c.execute("INSERT INTO testimonials (created, quote, name, sort) VALUES (?,?,?,?)",
+                              (time.strftime("%Y-%m-%d %H:%M"), quote_, name, top))
+                return self.redirect(back + "&done=review-added")
+            if not tid.isdigit():
+                return self.redirect(back)
+            tid = int(tid)
+            if do == "delete":
+                c.execute("DELETE FROM testimonials WHERE id=?", (tid,))
+                return self.redirect(back + "&done=review-deleted")
+            if do in ("up", "down"):
+                ids = [r["id"] for r in c.execute("SELECT id FROM testimonials ORDER BY sort, id")]
+                if tid in ids:
+                    i = ids.index(tid)
+                    j = i - 1 if do == "up" else i + 1
+                    if 0 <= j < len(ids):
+                        ids[i], ids[j] = ids[j], ids[i]
+                    c.executemany("UPDATE testimonials SET sort=? WHERE id=?", [(n, x) for n, x in enumerate(ids)])
+                return self.redirect(back + f"#t{tid}")
+            if quote_:
+                c.execute("UPDATE testimonials SET quote=?, name=?, shown=? WHERE id=?",
+                          (quote_, name, 1 if form.get("shown") else 0, tid))
+        self.redirect(back + "&done=review-saved")
 
     # ---- admin: site photos
     def admin_photos(self, notice):

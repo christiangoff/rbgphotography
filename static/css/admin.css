@@ -47,3 +47,13 @@
   .sidebar.open { transform: none; }
 }
 @media (max-width: 900px) { .admin-shell { background: none; } }
+
+/* Site text editor */
+.content-group { border: 1px solid var(--line); display: grid; gap: 1rem; margin: 0; }
+.content-group legend { font: 500 .75rem/1 var(--sans); letter-spacing: .18em; text-transform: uppercase; color: var(--sage); padding: 0 .4rem; }
+.content-group textarea { min-height: 0; }
+.content-group .was { display: block; margin-top: .35rem; font: 300 .85rem/1.4 var(--sans); letter-spacing: normal; text-transform: none; color: var(--sage); }
+.sticky-save { position: sticky; bottom: 0; background: #F6F2EC; padding: .8rem 0; border-top: 1px solid var(--line); z-index: 2; }
+label.toggle { display: flex; align-items: center; gap: .6rem; align-self: end; padding-bottom: .9rem; letter-spacing: .05em; text-transform: none; font-weight: 400; font-size: .95rem; }
+label.toggle input { width: auto; margin: 0; }
+.link-btn.danger { color: #9B3D22; }

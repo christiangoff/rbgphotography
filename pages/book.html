@@ -5,9 +5,9 @@ description: Request a family, newborn or mini photography session with Rachel G
 <section class="section">
   <div class="wrap book-grid">
     <div>
-      <p class="eyebrow">Book a session</p>
-      <h1>Let's plan your <em>session</em></h1>
-      <p class="lede">Share a few details and I'll reply within a day or two with available dates and next steps.</p>
+      <p class="eyebrow" data-edit="1">Book a session</p>
+      <h1 data-edit="2">Let's plan your <em>session</em></h1>
+      <p class="lede" data-edit="3">Share a few details and I'll reply within a day or two with available dates and next steps.</p>
       <form id="inquiry-form" class="form" method="post" action="/api/inquiry">
         <label>Your name<input name="name" autocomplete="name" required maxlength="120"></label>
         <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
@@ -38,12 +38,12 @@ description: Request a family, newborn or mini photography session with Rachel G
       </form>
     </div>
     <aside class="aside-box">
-      <h3>Prefer email?</h3>
+      <h3 data-edit="4">Prefer email?</h3>
       <p>Write to <a href="mailto:{{email}}">{{email}}</a><br>{{phone_link}}</p>
-      <h3 class="mt">Service area</h3>
+      <h3 class="mt" data-edit="5">Service area</h3>
       <p>Based in {{city}}, {{region}}, serving {{service_area}}.</p>
-      <h3 class="mt">What happens next</h3>
-      <p>I'll reply with open dates and a short agreement. A deposit holds your date, and I'll send a guide to help you plan outfits and timing.</p>
+      <h3 class="mt" data-edit="6">What happens next</h3>
+      <p data-edit="7">I'll reply with open dates and a short agreement. A deposit holds your date, and I'll send a guide to help you plan outfits and timing.</p>
     </aside>
   </div>
 </section>

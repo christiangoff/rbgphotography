@@ -4,6 +4,9 @@
   document.querySelectorAll("form[data-confirm]").forEach(function (f) {
     f.addEventListener("submit", function (e) { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
   });
+  document.querySelectorAll("button[data-confirm]").forEach(function (b) {
+    b.addEventListener("click", function (e) { if (!confirm(b.dataset.confirm)) e.preventDefault(); });
+  });
 
   // Number pickers (adults and kids): add minus and plus buttons around each number box
   Array.prototype.forEach.call(document.querySelectorAll(".headcount input[type=number]"), function (input) {

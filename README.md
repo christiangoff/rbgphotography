@@ -16,7 +16,7 @@ Raspberry Pi OS. No database server, no npm, no pip.
 | `/about` | Rachel's bio |
 | `/book` | Booking request form (saved on the Pi; optional email alert) |
 | `/gallery` | Private client galleries opened with a code; view, download one or all |
-| `/admin` | Rachel's dashboard (password protected): booking requests, client list, galleries, site photos |
+| `/admin` | Rachel's dashboard (password protected): booking requests, client list, galleries, site photos and text |
 
 Also built in: Google-friendly titles and descriptions, a `LocalBusiness`
 listing for search engines, `sitemap.xml`, `robots.txt`, social share previews,
@@ -121,6 +121,12 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
 - **Site photos:** replace any photo on the site (hero, session cards, location
   pages, Rachel's portrait) and it updates everywhere at once. Add, remove and
   reorder portfolio photos; the first four also appear on the home page.
+- **Site text:** edit the words on every public page (headings, paragraphs,
+  prices, list items, and each page's Google title and description), plus the
+  home page **Testimonials** (add, edit, hide, reorder, delete). Saved text is
+  kept in the database and shows right away; clearing a box brings back the
+  original text from `pages/`. Editable elements are marked `data-edit="<n>"`
+  in the page files; keep those numbers when editing pages by hand.
 
 Nothing is erased: deleted galleries and photos, and the old version of any
 replaced photo, are moved to `data/trash/` on the Pi. Empty it now and then.
@@ -139,9 +145,9 @@ name, so it's obvious what goes where.
       so pages load fast. `og-image.jpg` (1200×630) is the preview shown when
       the site is shared on Facebook or iMessage.
 - [ ] **Reviews:** the three quotes on the home page are marked "Sample". Swap in
-      real client reviews (with permission) in `pages/index.html`.
-- [ ] **Prices:** sample prices in `pages/sessions.html` and the home page cards.
-- [ ] **Bio:** `pages/about.html` has a draft bio and a `[bracketed]` line to finish.
+      real client reviews (with permission) under **Site text → Testimonials**.
+- [ ] **Prices:** sample prices on the Sessions page and the home page cards (**Site text**).
+- [ ] **Bio:** the About page has a draft bio and a `[bracketed]` line to finish (**Site text → About**).
 - [ ] **Delete the sample gallery** in **Galleries** (its code is `sample-2026`).
 
 Page text is plain HTML in `pages/`. Edit the words between the tags; the
