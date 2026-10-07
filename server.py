@@ -113,6 +113,7 @@ def load_config():
                      "region": "MD", "service_area": "Howard, Baltimore & Carroll Counties",
                      "instagram": "", "facebook": "", "payment_link": "", "deposit_link": "", "deposit": "$50"},
         "admin": {"username": "rachel", "password": ""},
+        "admin_users": {},
         "email": {"enabled": "false", "smtp_host": "", "smtp_port": "587", "smtp_user": "",
                   "smtp_password": "", "from_address": "", "notify_address": ""},
     })
@@ -128,6 +129,19 @@ CFG = load_config()
 # One payment link (Venmo, Square...) for deposits and balances; deposit_link is its older name.
 CFG["business"]["payment_link"] = CFG["business"]["payment_link"] or CFG["business"]["deposit_link"]
 DATA.mkdir(exist_ok=True)
+
+
+def admin_logins():
+    """Usernames (lowercase, so logins aren't case sensitive) -> passwords.
+    Rachel's login is under [admin]; extra admins go under [admin_users] as  name = password."""
+    logins = {}
+    a = CFG["admin"]
+    if a["password"]:
+        logins[a["username"].strip().lower()] = a["password"]
+    for name, pw in CFG["admin_users"].items():
+        if pw and name not in CFG.defaults():
+            logins[name.strip().lower()] = pw
+    return logins
 
 
 def secret_key():
@@ -998,8 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- admin: auth
     def admin_authorized(self):
-        a = CFG["admin"]
-        if not a["password"]:
+        logins = admin_logins()
+        if not logins:
             return None  # admin disabled until a password is set
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Basic "):
@@ -1007,9 +1021,12 @@ class Handler(BaseHTTPRequestHandler):
                 user, _, pw = base64.b64decode(auth[6:]).decode().partition(":")
             except (ValueError, UnicodeDecodeError):
                 return False
-            ok_user = hmac.compare_digest(user.encode(), a["username"].encode())
-            ok_pw = hmac.compare_digest(pw.encode(), a["password"].encode())
-            if ok_user and ok_pw:
+            user = user.strip().lower()
+            expected = logins.get(user, "")
+            # compare against something even for unknown names so timing doesn't reveal them
+            ok_pw = hmac.compare_digest(pw.encode(), (expected or secrets.token_hex(16)).encode())
+            if expected and ok_pw:
+                self.admin_user = user
                 return True
             if not ADMIN_LIMIT.allow(self.client_ip()):
                 return "locked"
@@ -1047,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
         values.update({
             "title": esc(title), "nav": "\n".join(items), "crumbs": trail,
             "notice": f'<p class="notice" role="status">{esc(notice)}</p>' if notice else "",
-            "admin_user": esc(CFG["admin"]["username"]), "content": body,
+            "admin_user": esc(getattr(self, "admin_user", CFG["admin"]["username"])), "content": body,
         })
         layout = (TEMPLATES / "admin.html").read_text(encoding="utf-8")
         self.send(200, version_photo_urls(fill(layout, values)), headers={"Cache-Control": "no-store"})
@@ -2519,7 +2536,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     host = CFG["server"]["host"]
     port = int(os.environ.get("PORT", CFG["server"]["port"]))
-    if not CFG["admin"]["password"]:
+    if not admin_logins():
         print("note: /admin is off until you set [admin] password in config.ini", file=sys.stderr)
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True

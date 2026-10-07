@@ -61,7 +61,7 @@ sudo systemctl restart rbg-website
 Set at least:
 
 - `[business]` email, phone, Instagram/Facebook links (these appear across the whole site)
-- `[admin] password` to switch on the `/admin` inbox (username is `rachel`)
+- `[admin] password` to switch on `/admin` (username `rachel`); add more admins under `[admin_users]` as `name = password` (usernames are not case sensitive)
 - `[server] site_url` to the real address once the site is public
 - `[email]` (optional) so the site can send email: alerts for each booking
   request, mini session confirmations, and the emails you send from the admin.
@@ -74,7 +74,7 @@ Set at least:
 
 ## 4. The admin dashboard
 
-Open **/admin** (username `rachel`, the password from `config.ini`). Everything
+Open **/admin** (username `rachel`, or any login under `[admin_users]`, with the password from `config.ini`). Everything
 below works from a phone or laptop on the same network. A sidebar on the left
 (a Menu button on phones) takes you between sections, and the **Dashboard**
 shows new requests, upcoming sessions, recent galleries and shortcuts for common jobs.
