@@ -61,7 +61,7 @@ ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("sessions", "/admin/ses
                   ("galleries", "/admin/galleries", "Galleries"),
                   ("emails", "/admin/emails", "Emails"),
                   ("photos", "/admin/photos", "Site photos"), ("content", "/admin/content", "Site text"),
-                  ("locations", "/admin/locations", "Locations")]
+                  ("locations", "/admin/locations", "Locations"), ("pricing", "/admin/pricing", "Prices & promos")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -73,6 +73,7 @@ ADMIN_ICONS = {
     "emails": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3.5 6l8.5 7 8.5-7"/>',
     "content": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
     "locations": '<path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.4"/>',
+    "pricing": '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
@@ -88,7 +89,10 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "review-deleted": "Testimonial deleted.", "location-saved": "Location saved.",
            "location-deleted": "Location deleted. Its photo is in the trash folder.",
            "location-invalid": "Please give the location a name.",
-           "slug-taken": "Another location already uses that web address. Pick a different one."}
+           "slug-taken": "Another location already uses that web address. Pick a different one.",
+           "prices-saved": "Session prices saved.", "promo-saved": "Promo code saved.",
+           "promo-deleted": "Promo code deleted.", "promo-invalid": "Please enter a code (letters and numbers) and what it offers.",
+           "promo-taken": "That promo code already exists."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner", "og-image.jpg": "Preview when the site is shared",
     "about-rachel.jpg": "Rachel's portrait",
@@ -280,6 +284,10 @@ with db() as _c:
                           spots, tips, map, photo, seo_title, seo_description, sort)
                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        [(time.strftime("%Y-%m-%d %H:%M"), *row, n) for n, row in enumerate(SEED_LOCATIONS)])
+    _c.execute("""CREATE TABLE IF NOT EXISTS session_prices (session_type TEXT PRIMARY KEY, price TEXT)""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS promo_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, code TEXT UNIQUE NOT NULL,
+        offer TEXT NOT NULL, discount TEXT, expires TEXT, max_uses INTEGER, active INTEGER NOT NULL DEFAULT 1)""")
     # one live booking per slot, enforced by the database itself
     _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
@@ -289,7 +297,8 @@ with db() as _c:
                       "session_date": "TEXT", "session_time": "TEXT", "session_location": "TEXT",
                       "price": "TEXT", "deposit": "TEXT", "deposit_link": "TEXT",
                       "deposit_paid": "TEXT", "paid_full": "TEXT", "gallery": "TEXT",
-                      "pref_date": "TEXT", "pref_time": "TEXT"},
+                      "pref_date": "TEXT", "pref_time": "TEXT",
+                      "promo_code": "TEXT", "promo_offer": "TEXT", "promo_discount": "TEXT"},
         "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
                     "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
                     "adults": "INTEGER", "kids": "INTEGER"},
@@ -327,6 +336,7 @@ class RateLimiter:
 INQUIRY_LIMIT = RateLimiter(5, 3600)      # 5 inquiries per hour per address
 GALLERY_LIMIT = RateLimiter(10, 900)      # 10 code attempts per 15 minutes
 ADMIN_LIMIT = RateLimiter(20, 900)        # 20 failed admin logins per 15 minutes
+PROMO_LIMIT = RateLimiter(30, 3600)       # 30 promo code checks per hour
 
 
 # --------------------------------------------------------------------------- templating
@@ -1037,16 +1047,61 @@ def fill_template(text, values):
     return re.sub(r"\{([a-z_]+)\}", lambda m: str(values[m.group(1)]) if values.get(m.group(1)) else m.group(0), text)
 
 
-def balance_due(price, deposit, deposit_paid):
-    """'$375' from a '$425' price less a paid '$50' deposit; empty when the price isn't a plain amount."""
-    def amount(text):
-        m = re.fullmatch(r"\$?\s*([\d,]+(?:\.\d{1,2})?)", (text or "").strip())
-        return float(m.group(1).replace(",", "")) if m else None
-    total = amount(price)
+def money(text):
+    m = re.fullmatch(r"\$?\s*([\d,]+(?:\.\d{1,2})?)", (text or "").strip())
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def fmt_money(n):
+    return f"${n:,.2f}".replace(".00", "")
+
+
+def discount_amount(price, discount):
+    """Dollars off: discount is '$50' or '15%' (of the price)."""
+    d = (discount or "").strip()
+    total = money(price)
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*%", d)
+    if m:
+        return round(total * float(m.group(1)) / 100, 2) if total is not None else None
+    return money(d)
+
+
+def balance_due(price, deposit, deposit_paid, discount=""):
+    """'$375' from a '$425' price less a paid '$50' deposit (and any promo discount);
+    empty when the price isn't a plain amount."""
+    total = money(price)
     if total is None:
         return ""
-    left = total - ((amount(deposit) or 0) if deposit_paid else 0)
-    return f"${left:,.2f}".replace(".00", "")
+    left = total - (discount_amount(price, discount) or 0) - ((money(deposit) or 0) if deposit_paid else 0)
+    return fmt_money(max(0, left))
+
+
+def session_prices():
+    with db() as c:
+        return {r["session_type"]: r["price"] for r in c.execute("SELECT * FROM session_prices") if r["price"]}
+
+
+def clean_promo(code):
+    return re.sub(r"[^A-Z0-9_-]", "", (code or "").strip().upper())[:40]
+
+
+def promo_uses(code):
+    with db() as c:
+        return c.execute("SELECT COUNT(*) FROM inquiries WHERE promo_code=?", (code,)).fetchone()[0]
+
+
+def check_promo(code):
+    """(promo row, None) for a code a client can use right now, else (None, reason to show them)."""
+    code = clean_promo(code)
+    with db() as c:
+        r = c.execute("SELECT * FROM promo_codes WHERE code=?", (code,)).fetchone() if code else None
+    if not r or not r["active"]:
+        return None, "That promo code isn't valid. Check the spelling, or leave it blank."
+    if r["expires"] and time.strftime("%Y-%m-%d") > r["expires"]:
+        return None, "That promo code has expired."
+    if r["max_uses"] and promo_uses(code) >= r["max_uses"]:
+        return None, "That promo code has already been used up."
+    return r, None
 
 
 def unfilled(text):
@@ -1231,6 +1286,8 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/calendar/([0-9a-f]{32})\.ics", p)
             if m:
                 return self.calendar_feed(m.group(1))
+            if p == "/api/promo":
+                return self.promo_check()
             return self.serve_page(p)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -1368,19 +1425,40 @@ class Handler(BaseHTTPRequestHandler):
         pref_time = (form.get("pref_time") or "").strip()
         pref_time = pref_time if re.fullmatch(r"\d{1,2}:\d{2}", pref_time) else None
         ip = self.client_ip()
+        promo = None
+        if clean_promo(form.get("promo")):
+            if not PROMO_LIMIT.allow(ip):
+                return fail("Too many promo code tries. Please try again later.", 429)
+            promo, err = check_promo(form.get("promo"))
+            if err:
+                return fail(err)
         if not INQUIRY_LIMIT.allow(ip):
             return fail("Thanks! We've received several messages from you already. Rachel will be in touch soon.", 429)
         with DB_LOCK, db() as c:
             c.execute("""INSERT INTO inquiries (created, name, email, phone, session_type, people,
-                         dates, location, heard, message, ip, adults, kids, pref_date, pref_time)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip, adults, kids, pref_date, pref_time))
+                         dates, location, heard, message, ip, adults, kids, pref_date, pref_time,
+                         promo_code, promo_offer, promo_discount)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (time.strftime("%Y-%m-%d %H:%M"), *data.values(), ip, adults, kids, pref_date, pref_time,
+                       promo["code"] if promo else None, promo["offer"] if promo else None,
+                       promo["discount"] if promo else None))
+        if promo:
+            data["promo"] = f'{promo["code"]} ({promo["offer"]})'
         data["preferred"] = ", ".join(x for x in [nice_date(pref_date) if pref_date else "",
                                                   nice_time(pref_time) if pref_time else ""] if x)
         threading.Thread(target=notify, args=(dict(data),), daemon=True).start()
         if wants_json:
             return self.send(200, json.dumps({"ok": True}), "application/json")
         self.redirect("/thanks")
+
+    def promo_check(self):
+        """Lets the Book form tell people right away whether their promo code works."""
+        if not PROMO_LIMIT.allow(self.client_ip()):
+            return self.send(429, json.dumps({"ok": False, "error": "Too many tries. Please try again later."}),
+                             "application/json", {"Cache-Control": "no-store"})
+        promo, err = check_promo(self.query().get("code", ""))
+        body = {"ok": True, "code": promo["code"], "offer": promo["offer"]} if promo else {"ok": False, "error": err}
+        self.send(200, json.dumps(body), "application/json", {"Cache-Control": "no-store"})
 
     # ---- admin: auth
     def admin_authorized(self):
@@ -1495,6 +1573,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_mini_form(int(m.group(1)), notice)
         if p == "/admin/emails":
             return self.admin_emails(q.get("edit", ""), notice)
+        if p == "/admin/pricing":
+            return self.admin_pricing(q.get("edit", ""), notice)
         if p == "/admin/locations":
             return self.admin_locations(notice)
         if p == "/admin/locations/new":
@@ -1562,6 +1642,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_email_send(form)
         if p == "/admin/emails/template":
             return self.admin_template_save(form)
+        if p == "/admin/pricing/prices":
+            return self.admin_prices_save(form)
+        if p == "/admin/pricing/promo":
+            return self.admin_promo_save(form)
         if p == "/admin/locations/save":
             return self.admin_location_save(form)
         m = re.fullmatch(r"/admin/locations/(\d+)/(delete|up|down)", p)
@@ -1677,10 +1761,12 @@ class Handler(BaseHTTPRequestHandler):
              ("Asked for", ", ".join(x for x in [nice_date(r["pref_date"]) if r["pref_date"] else "",
                                                  nice_time(r["pref_time"]) if r["pref_time"] else ""] if x)),
              ("Other dates", r["dates"]),
-             ("Location idea", r["location"]), ("Heard about us", r["heard"])] if val)
+             ("Location idea", r["location"]), ("Heard about us", r["heard"]),
+             ("Promo code", f'{r["promo_code"]}: {r["promo_offer"]}' if r["promo_code"] else "")] if val)
         when = ", ".join(x for x in [nice_date(r["session_date"]) if r["session_date"] else "",
                                      nice_time(r["session_time"]) if r["session_time"] else ""] if x)
         flags = "".join([
+            f'<span class="tag promo" title="{esc(r["promo_offer"])}">Promo {esc(r["promo_code"])}</span>' if r["promo_code"] else "",
             f'<span class="tag ok">Paid in full</span>' if r["paid_full"] else
             f'<span class="tag ok">Deposit paid</span>' if r["deposit_paid"] else
             ('<span class="tag due">Deposit due</span>' if r["status"] == "booked" else ""),
@@ -1713,12 +1799,15 @@ class Handler(BaseHTTPRequestHandler):
       <label>Date<input type="date" name="session_date" value="{esc(r['session_date'] or r['pref_date'] or '')}"></label>
       <label>Time<input type="time" name="session_time" value="{esc(r['session_time'] or r['pref_time'] or '')}"></label>
       <label class="full">Location<input name="session_location" maxlength="200" value="{esc(r['session_location'] or r['location'] or '')}"></label>
-      <label>Price<input name="price" maxlength="40" value="{v('price')}" placeholder="$425"></label>
+      <label>Price<input name="price" maxlength="40" value="{v('price') or esc(session_prices().get(r['session_type'], ''))}" placeholder="$425"></label>
       <label>Deposit<input name="deposit" maxlength="40" value="{esc(r['deposit'] or CFG['business']['deposit'])}"></label>
       <label class="full">Payment link <span class="opt">(for the deposit and the balance)</span>
         <input name="deposit_link" type="url" maxlength="500" value="{esc(r['deposit_link'] or CFG['business']['payment_link'])}" placeholder="https://…"></label>
       <div class="full row-actions"><button class="btn small">Save details</button></div>
     </form>
+    {f'<p class="muted small">Promo {esc(r["promo_code"])} takes {esc(r["promo_discount"])} off'
+      + (f'; balance due {balance_due(r["price"], r["deposit"] or CFG["business"]["deposit"], r["deposit_paid"], r["promo_discount"])}' if money(r["price"]) is not None else '') + '.</p>'
+      if r["promo_code"] and r["promo_discount"] else ''}
     <div class="payments">{pay("deposit", "Deposit paid", r["deposit_paid"])}{pay("full", "Paid in full", r["paid_full"])}</div>
   </details>"""
         return f"""
@@ -1820,7 +1909,14 @@ class Handler(BaseHTTPRequestHandler):
                     ctx.update(to=r["email"], who=r["name"], inquiry_id=r["id"], client_id=r["client_id"],
                                back=f"/admin/sessions#s{r['id']}")
                     v.update(name=r["name"], session_type=(r["session_type"] or "session").lower(),
-                             location=r["session_location"] or r["location"], price=r["price"])
+                             location=r["session_location"] or r["location"],
+                             price=r["price"] or session_prices().get(r["session_type"], ""))
+                    if r["promo_code"]:
+                        v.update(promo_code=r["promo_code"], promo_offer=r["promo_offer"])
+                        off = discount_amount(v["price"], r["promo_discount"])
+                        if off:
+                            v["discount"] = fmt_money(off)
+                        ctx["discount"] = r["promo_discount"]
                     ctx["deposit_paid"] = bool(r["deposit_paid"])
                     ctx["raw"].update({k: val for k, val in [
                         ("date", r["session_date"] or r["pref_date"]), ("time", r["session_time"] or r["pref_time"]),
@@ -1861,7 +1957,7 @@ class Handler(BaseHTTPRequestHandler):
             if raw.get(k):
                 v[k] = raw[k][:n]
         v["payment_link"] = v.get("deposit_link", "")
-        bal = balance_due(v.get("price"), raw.get("deposit"), ctx.get("deposit_paid"))
+        bal = balance_due(v.get("price"), raw.get("deposit"), ctx.get("deposit_paid"), ctx.get("discount", ""))
         if bal:
             v["balance"] = bal
         v.setdefault("session_type", "session")
@@ -2019,7 +2115,8 @@ class Handler(BaseHTTPRequestHandler):
     <label class="full">Subject<input name="subject" maxlength="200" value="{esc(editing['subject'])}"></label>
     <label class="full">Message<textarea name="body" rows="12" maxlength="20000">{esc(editing['body'])}</textarea></label>
     <p class="muted small full">Words in braces are filled in for you: {{first_name}}, {{name}}, {{session_type}},
-       {{date}}, {{time}}, {{location}}, {{gallery_link}}, {{gallery_code}}, {{photographer}}, {{business}}.</p>
+       {{date}}, {{time}}, {{location}}, {{price}}, {{deposit}}, {{balance}}, {{payment_link}}, {{promo_code}},
+       {{promo_offer}}, {{discount}}, {{gallery_link}}, {{gallery_code}}, {{photographer}}, {{business}}.</p>
     <div class="full row-actions"><button class="btn">Save template</button><a class="btn ghost" href="/admin/emails">Cancel</a></div>
   </form>"""
         rows = "".join(f'<tr><td><strong>{esc(t["name"])}</strong></td><td>{esc(t["subject"]) or "<span class=muted>—</span>"}</td>'
@@ -2341,6 +2438,104 @@ class Handler(BaseHTTPRequestHandler):
             if thumb.is_file():
                 thumb.unlink()
         self.redirect(f"/admin/galleries/{slug}?done=photo-removed")
+
+    # ---- admin: prices and promo codes
+    def admin_pricing(self, edit, notice):
+        prices = session_prices()
+        price_rows = "".join(
+            f'<label>{esc(t)}<input name="p_{i}" maxlength="40" value="{esc(prices.get(t, ""))}" placeholder="$425"></label>'
+            for i, t in enumerate(SESSION_TYPES) if t != "Not sure yet")
+        with db() as c:
+            promos = c.execute("SELECT * FROM promo_codes ORDER BY active DESC, id DESC").fetchall()
+            uses = dict(c.execute("SELECT promo_code, COUNT(*) FROM inquiries WHERE promo_code IS NOT NULL "
+                                  "GROUP BY promo_code").fetchall())
+        today = time.strftime("%Y-%m-%d")
+        trs = []
+        for r in promos:
+            n = uses.get(r["code"], 0)
+            state = ("Off" if not r["active"] else "Expired" if r["expires"] and today > r["expires"] else
+                     "Used up" if r["max_uses"] and n >= r["max_uses"] else "Active")
+            trs.append(f"""<tr>
+  <td><a href="/admin/pricing?edit={r['id']}#promo"><strong>{esc(r['code'])}</strong></a></td>
+  <td>{esc(r['offer'])}{f'<br><span class="muted">Takes {esc(r["discount"])} off the balance</span>' if r['discount'] else ''}</td>
+  <td class="nowrap">{n}{f' of {r["max_uses"]}' if r['max_uses'] else ''}</td>
+  <td class="nowrap">{esc(nice_date(r['expires'])) if r['expires'] else '<span class="muted">Never</span>'}</td>
+  <td><span class="tag{' ok' if state == 'Active' else ''}">{state}</span></td></tr>""")
+        table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Code</th><th>Offer</th><th>Used</th>'
+                 f'<th>Expires</th><th>Status</th></tr></thead><tbody>{"".join(trs)}</tbody></table></div>'
+                 if trs else '<p class="muted">No promo codes yet.</p>')
+        e = next((r for r in promos if str(r["id"]) == edit), None)
+        v = (lambda k: esc(e[k] or "") if e else "")
+        promo_form = f"""
+  <form method="post" action="/admin/pricing/promo" class="form card-pad" id="promo">
+    <input type="hidden" name="id" value="{e['id'] if e else ''}">
+    <h2 class="full">{f'Edit {esc(e["code"])}' if e else 'New promo code'}</h2>
+    <label>Code <span class="opt">(letters and numbers; not case sensitive)</span>
+      <input name="code" required maxlength="40" value="{v('code')}" placeholder="FALL25" autocapitalize="characters"></label>
+    <label>What it offers <span class="opt">(shown to the family)</span>
+      <input name="offer" required maxlength="120" value="{v('offer')}" placeholder="$50 off your session"></label>
+    <label>Discount <span class="opt">(optional: $50 or 15%; taken off the balance)</span>
+      <input name="discount" maxlength="20" value="{v('discount')}" placeholder="$50"></label>
+    <label>Expires <span class="opt">(optional; last day it works)</span><input name="expires" type="date" value="{v('expires')}"></label>
+    <label>Limit <span class="opt">(optional: how many bookings can use it)</span>
+      <input name="max_uses" type="number" min="1" max="10000" value="{e['max_uses'] if e and e['max_uses'] else ''}"></label>
+    <label class="toggle"><input type="checkbox" name="active" value="1"{' checked' if not e or e['active'] else ''}> Code works on the Book page</label>
+    <div class="full row-actions"><button class="btn small" name="do" value="save">{'Save changes' if e else 'Create promo code'}</button>
+      {f'<a class="btn ghost small" href="/admin/pricing#promo">Cancel</a><button class="link-btn danger" name="do" value="delete" data-confirm="Delete {esc(e["code"])}? Sessions that used it keep their note.">Delete</button>' if e else ''}</div>
+  </form>"""
+        body = f"""
+  <div class="admin-head"><h1>Prices &amp; promos</h1></div>
+  <p class="muted">Prices aren't shown on the website. They fill in a new session's price, which goes into emails as
+     {{price}}, and the balance due as {{balance}}.</p>
+  <form method="post" action="/admin/pricing/prices" class="form card-pad">
+    <h2 class="full">Session prices</h2>
+    {price_rows}
+    <div class="full row-actions"><button class="btn small">Save prices</button></div>
+  </form>
+  <section class="mt-xl">
+    <div class="admin-head"><h2>Promo codes</h2></div>
+    <p class="muted">Families can enter a code on the Book page. It's checked before they can send the form, and
+       sessions that used one are marked in Sessions.</p>
+    {table}
+  </section>
+  {promo_form}"""
+        self.admin_page(body, "Prices & promos", "pricing", notice)
+
+    def admin_prices_save(self, form):
+        with DB_LOCK, db() as c:
+            for i, t in enumerate(SESSION_TYPES):
+                if f"p_{i}" in form:
+                    c.execute("INSERT INTO session_prices (session_type, price) VALUES (?,?) "
+                              "ON CONFLICT(session_type) DO UPDATE SET price=excluded.price", (t, form[f"p_{i}"].strip()[:40]))
+        self.redirect("/admin/pricing?done=prices-saved")
+
+    def admin_promo_save(self, form):
+        pid = int(form["id"]) if form.get("id", "").isdigit() else None
+        if form.get("do") == "delete" and pid:
+            with DB_LOCK, db() as c:
+                c.execute("DELETE FROM promo_codes WHERE id=?", (pid,))
+            return self.redirect("/admin/pricing?done=promo-deleted")
+        code, offer = clean_promo(form.get("code")), form.get("offer", "").strip()[:120]
+        back = f"/admin/pricing?edit={pid}" if pid else "/admin/pricing"
+        if not code or not offer:
+            return self.redirect(back + "&done=promo-invalid#promo" if pid else back + "?done=promo-invalid#promo")
+        discount = form.get("discount", "").strip()[:20]
+        if discount and not (re.fullmatch(r"\d+(?:\.\d+)?\s*%", discount) or money(discount) is not None):
+            discount = ""
+        expires = form.get("expires", "").strip()
+        expires = expires if re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires) else None
+        max_uses = int(form["max_uses"]) if form.get("max_uses", "").isdigit() and int(form["max_uses"]) > 0 else None
+        vals = (code, offer, discount or None, expires, max_uses, 1 if form.get("active") else 0)
+        with DB_LOCK, db() as c:
+            if c.execute("SELECT 1 FROM promo_codes WHERE code=? AND id IS NOT ?", (code, pid)).fetchone():
+                return self.redirect(back + ("&" if pid else "?") + "done=promo-taken#promo")
+            if pid:
+                c.execute("UPDATE promo_codes SET code=?, offer=?, discount=?, expires=?, max_uses=?, active=? WHERE id=?",
+                          (*vals, pid))
+            else:
+                c.execute("INSERT INTO promo_codes (code, offer, discount, expires, max_uses, active, created) "
+                          "VALUES (?,?,?,?,?,?,?)", (*vals, time.strftime("%Y-%m-%d %H:%M")))
+        self.redirect("/admin/pricing?done=promo-saved")
 
     # ---- admin: locations
     def admin_locations(self, notice):
@@ -2859,7 +3054,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class="card-body">
           <p class="eyebrow">{esc(nice_date(ev['date']))}</p>
           <h3>{esc(ev['title'])}</h3>
-          <p class="price">{esc(ev['price'])}</p>
+          {f'<p class="price">{esc(ev["price"])}</p>' if ev['price'] else ''}
           <p>{esc(ev['location'])}<br><span class="muted">{nice_time(ev['start_time'])} to {nice_time(ev['end_time'])}</span></p>
           <span class="btn{' ghost' if left <= 0 else ''}">{'See times' if left > 0 else avail}</span>
           {f'<p class="muted small mt-s">{avail}</p>' if left > 0 else ''}
@@ -3120,7 +3315,7 @@ class Handler(BaseHTTPRequestHandler):
     <label>Last slot ends by<input name="end_time" type="time" required value="{v('end_time', '12:00')}"></label>
     <label>Minutes per session<input name="slot_minutes" type="number" min="5" max="240" required value="{v('slot_minutes', '20')}"></label>
     <label>Break between sessions <span class="opt">(minutes)</span><input name="gap_minutes" type="number" min="0" max="120" value="{v('gap_minutes', '10')}"></label>
-    <label>Price<input name="price" maxlength="60" value="{v('price', '$225')}"></label>
+    <label>Price <span class="opt">(optional; shown on the booking page)</span><input name="price" maxlength="60" value="{v('price')}"></label>
     <label class="full">Details for families <span class="opt">(what's included, deposit, what to wear)</span><textarea name="details" maxlength="3000">{v('details')}</textarea></label>
     <div class="full row-actions"><button class="btn">{'Save changes' if ev else 'Create mini session'}</button>
       <a class="btn ghost" href="/admin/minis">Back to mini sessions</a>

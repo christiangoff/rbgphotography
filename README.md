@@ -135,6 +135,12 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   away. Galleries not linked to a session are never watermarked. Needs Pillow
   (`sudo apt install -y python3-pil`); copies are cached in each gallery's
   `.watermarked/` folder.
+- **Prices & promos:** prices are not shown on the website. Set a default price
+  per session type; a session's price starts from it and goes into emails as
+  `{price}` (and `{balance}`, less any deposit paid and promo discount). Create
+  promo codes with what they offer, an optional discount ($ or %), expiry date
+  and use limit. The Book page checks a code before the form can be sent, and
+  sessions that used one show a **Promo** tag.
 - **Locations:** add, edit, hide, reorder and delete location pages. Each has
   its own page at `/locations/<name>` with a photo (cropped in the browser), a
   Google Map of the address you enter, favorite spots and tips. Cards appear on
@@ -165,7 +171,7 @@ name, so it's obvious what goes where.
       the site is shared on Facebook or iMessage.
 - [ ] **Reviews:** the three quotes on the home page are marked "Sample". Swap in
       real client reviews (with permission) under **Site text → Testimonials**.
-- [ ] **Prices:** sample prices on the Sessions page and the home page cards (**Site text**).
+- [ ] **Prices:** set real session prices under **Prices & promos** (they aren't shown publicly).
 - [ ] **Bio:** the About page has a draft bio and a `[bracketed]` line to finish (**Site text → About**).
 - [ ] **Delete the sample gallery** in **Galleries** (its code is `sample-2026`).
 

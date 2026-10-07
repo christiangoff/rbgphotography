@@ -85,8 +85,39 @@
     }
     var place = params.get("location"), where = form.querySelector("input[name=location]");
     if (place && where && !where.value) where.value = place;
+
+    // Promo codes are checked as soon as they're entered, and again before sending
+    var promo = form.querySelector("input[name=promo]"), promoMsg = form.querySelector(".promo-status");
+    var checked = { code: "", ok: true };
+    function checkPromo() {
+      var code = promo ? promo.value.trim() : "";
+      if (!code) { checked = { code: "", ok: true }; promoMsg.textContent = ""; promoMsg.className = "promo-status"; return Promise.resolve(true); }
+      if (checked.code === code.toUpperCase()) return Promise.resolve(checked.ok);
+      promoMsg.textContent = "Checking…"; promoMsg.className = "promo-status";
+      return fetch("/api/promo?code=" + encodeURIComponent(code)).then(function (r) { return r.json(); }).then(function (d) {
+        checked = { code: code.toUpperCase(), ok: !!d.ok };
+        promoMsg.textContent = d.ok ? "\u2713 " + d.offer : d.error;
+        promoMsg.className = "promo-status " + (d.ok ? "ok" : "bad");
+        return checked.ok;
+      }).catch(function () { promoMsg.textContent = ""; return true; });  // the server checks it again anyway
+    }
+    if (promo) {
+      if (params.get("promo")) promo.value = params.get("promo");
+      promo.addEventListener("change", checkPromo);
+      form.querySelector("[data-promo-check]").addEventListener("click", checkPromo);
+      promo.addEventListener("input", function () { if (checked.code !== promo.value.trim().toUpperCase()) { promoMsg.textContent = ""; promoMsg.className = "promo-status"; } });
+      if (promo.value) checkPromo();
+    }
+
     form.addEventListener("submit", function (e) {
       e.preventDefault();
+      if (promo && promo.value.trim() && checked.code !== promo.value.trim().toUpperCase()) {
+        return checkPromo().then(function (ok) { if (ok) form.requestSubmit ? form.requestSubmit() : send(); else promo.focus(); });
+      }
+      if (promo && promo.value.trim() && !checked.ok) { promo.focus(); return; }
+      send();
+    });
+    function send() {
       var btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
       status.textContent = "Sending…";
@@ -100,6 +131,6 @@
         p.textContent = data.error || "Something went wrong. Please try again."; status.appendChild(p);
         btn.disabled = false;
       }).catch(function () { form.submit(); });
-    });
+    }
   }
 })();
