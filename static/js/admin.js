@@ -194,6 +194,9 @@ var photoTool = (function () {
         }
         var f = files[i];
         say("Uploading " + (i + 1) + " of " + files.length + "…");
+        if (zone.dataset.resize && !f.resized) {  // shrink big photos in the browser first so uploads are quick
+          return shrink(f, +zone.dataset.resize).then(function (small) { small.resized = true; files[i] = small; next(i); });
+        }
         var sep = zone.dataset.upload.indexOf("?") >= 0 ? "&" : "?";
         var url = zone.dataset.upload + (zone.dataset.upload.indexOf("name=") >= 0 ? "" : sep + "name=" + encodeURIComponent(f.name));
         fetch(url, { method: "POST", body: f, headers: { "Content-Type": f.type || "application/octet-stream" } })
@@ -203,6 +206,25 @@ var photoTool = (function () {
           .then(function () { next(i + 1); });
       }
       next(0);
+    }
+
+    function shrink(file, max) {
+      return new Promise(function (resolve) {
+        if (!/jpe?g$/i.test(file.type) && !/\.jpe?g$/i.test(file.name)) return resolve(file);
+        var url = URL.createObjectURL(file), img = new Image();
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          var k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+          if (k === 1 && file.size < 1500000) return resolve(file);
+          var c = document.createElement("canvas");
+          c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+          var g = c.getContext("2d"); g.imageSmoothingQuality = "high";
+          g.drawImage(img, 0, 0, c.width, c.height);
+          c.toBlob(function (b) { resolve(b ? new File([b], file.name, { type: "image/jpeg" }) : file); }, "image/jpeg", 0.88);
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+        img.src = url;
+      });
     }
 
     if (input) input.addEventListener("change", function () {

@@ -123,7 +123,11 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   a cropper set to that photo's shape (hero 2400×1350, cards 1600×1200,
   locations 2000×1250, portrait 1200×1500). **Focus point** picks the spot that
   stays in view when phones and wide screens trim the edges (saved in
-  `data/photo_focus.json`). Add, remove and
+  `data/photo_focus.json`). With Pillow installed, every page, portfolio and
+  location photo is resized to the size the site shows (2000 px for the
+  portfolio), stripped of camera data including GPS, and compressed on upload;
+  an **Optimize photos** button fixes ones uploaded earlier. Gallery uploads are
+  left untouched. Add, remove and
   reorder portfolio photos; the first four also appear on the home page.
 - **Watermarks:** while a gallery's session isn't marked **Paid in full**, the
   client sees watermarked previews (a repeating logo, max 2000 px) and downloads

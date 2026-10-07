@@ -807,6 +807,43 @@ def watermarked(g, name, kind):
             return None
 
 
+def photo_max_side(name):
+    """Longest side a site, portfolio or location photo needs to be."""
+    shape = PHOTO_SHAPES.get(name) or ((2000, 1250) if name.startswith("location-") else None)
+    return max(shape) if shape else 2000
+
+
+def optimize_photo(path, max_side):
+    """Shrink a page photo to the size the site shows, strip camera data (including GPS) and
+    recompress it so pages load fast. Keeps the file name and format. Returns bytes saved."""
+    if not HAVE_PIL:
+        return 0
+    before = path.stat().st_size
+    try:
+        with Image.open(path) as im:
+            fmt = im.format
+            resized = max(im.size) > max_side
+            if fmt not in ("JPEG", "PNG", "WEBP"):
+                return 0
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
+            tmp = path.with_name(f".opt-{secrets.token_hex(4)}{path.suffix}")
+            if fmt == "JPEG":
+                im.convert("RGB").save(tmp, "JPEG", quality=82, optimize=True, progressive=True)
+            elif fmt == "WEBP":
+                im.save(tmp, "WEBP", quality=82)
+            else:
+                im.save(tmp, "PNG", optimize=True)
+        if resized or tmp.stat().st_size < before * 0.9:
+            tmp.replace(path)
+        else:
+            tmp.unlink()
+    except Exception as exc:
+        print(f"optimizing {path.name} failed: {exc}", file=sys.stderr)
+        return 0
+    return max(0, before - path.stat().st_size)
+
+
 def make_thumb(path):
     if not HAVE_PIL:
         return
@@ -1444,6 +1481,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_file(g["folder"] / "thumbs", m.group(3))
             return self.serve_file(g["folder"], m.group(3))
         if p == "/admin/photos":
+            if q.get("done") == "photos-optimized":
+                kb = int(q.get("saved", "0")) if q.get("saved", "").isdigit() else 0
+                notice = (f"Photos optimized. Saved {kb / 1024:.1f} MB." if kb >= 1024 else
+                          f"Photos optimized. Saved {kb} KB." if kb else "Photos were already optimized.")
             return self.admin_photos(notice)
         if p == "/admin/minis":
             return self.admin_minis(notice)
@@ -1502,6 +1543,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_gallery_delete(m.group(1), form.get("name") if m.group(2) == "photo-delete" else None)
         if p == "/admin/photos/delete":
             return self.admin_photo_delete(form.get("name", ""))
+        if p == "/admin/photos/optimize":
+            saved = sum(optimize_photo(f, photo_max_side(f.name)) for f in sorted(PHOTOS.iterdir())
+                        if f.is_file() and f.suffix.lower() in IMAGE_EXT)
+            return self.redirect(f"/admin/photos?done=photos-optimized&saved={saved // 1024}")
         if p == "/admin/photos/focus":
             return self.admin_photo_focus(form)
         if p == "/admin/photos/move":
@@ -2627,14 +2672,25 @@ class Handler(BaseHTTPRequestHandler):
         port = portfolio_photos()
         site = sorted(p.name for p in PHOTOS.iterdir()
                       if p.is_file() and p.suffix.lower() in IMAGE_EXT and p.name not in port)
+        big = [n for n in port + site if (PHOTOS / n).stat().st_size > 600 * 1024]
+        if not HAVE_PIL:
+            opt = ('<p class="notice warn">Install Pillow on the Pi (<code>sudo apt install -y python3-pil</code>, then '
+                   'restart) so uploaded photos are resized and compressed automatically.</p>')
+        elif big:
+            opt = (f'<form method="post" action="/admin/photos/optimize" class="notice warn row-actions">'
+                   f'<span>{len(big)} photo{"s are" if len(big) > 1 else " is"} larger than needed and may load slowly.</span>'
+                   f'<button class="btn small">Optimize photos</button></form>')
+        else:
+            opt = ""
         body = f"""
   <div class="admin-head"><h1>Site photos</h1></div>
+  {opt}
   <p class="muted">Replace a photo to update it everywhere it appears; you'll get to crop it to the right shape first.
      Screens of different sizes trim the edges of wide photos, so use <strong>Focus point</strong> to pick the part
      that should always stay in view (a face, say). Changes show up right away.</p>
   <h2>Portfolio <span class="muted">({len(port)})</span></h2>
   <p class="muted">These appear on the Portfolio page in this order; the first four also show on the home page.</p>
-  <div class="dropzone" data-upload="/admin/upload?kind=portfolio">
+  <div class="dropzone" data-upload="/admin/upload?kind=portfolio" data-resize="2000">
     <p><strong>Add portfolio photos</strong>: drag them here or <label class="link-btn">choose files<input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></p>
     <div class="progress" aria-live="polite"></div>
   </div>
@@ -2779,6 +2835,8 @@ class Handler(BaseHTTPRequestHandler):
             tmp.replace(dest)
             if kind == "gallery":
                 make_thumb(dest)
+            else:  # page photos get resized and compressed; gallery originals stay untouched
+                optimize_photo(dest, photo_max_side(dest.name))
             return self.send(200, json.dumps({"ok": True, "name": dest.name}), "application/json")
         finally:
             if tmp.exists():
