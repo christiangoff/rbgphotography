@@ -125,6 +125,12 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   stays in view when phones and wide screens trim the edges (saved in
   `data/photo_focus.json`). Add, remove and
   reorder portfolio photos; the first four also appear on the home page.
+- **Watermarks:** while a gallery's session isn't marked **Paid in full**, the
+  client sees watermarked previews (a repeating logo, max 2000 px) and downloads
+  are switched off. Marking the session paid in full removes the watermark right
+  away. Galleries not linked to a session are never watermarked. Needs Pillow
+  (`sudo apt install -y python3-pil`); copies are cached in each gallery's
+  `.watermarked/` folder.
 - **Locations:** add, edit, hide, reorder and delete location pages. Each has
   its own page at `/locations/<name>` with a photo (cropped in the browser), a
   Google Map of the address you enter, favorite spots and tips. Cards appear on

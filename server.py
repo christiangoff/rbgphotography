@@ -749,6 +749,64 @@ def sniff_image(head):
     return None
 
 
+WATERMARK = STATIC / "img" / "brand" / "rbg-watermark-white.png"
+WM_LOCK = threading.Lock()
+
+
+def gallery_unpaid(slug):
+    """True while any session linked to this gallery isn't marked paid in full.
+    Galleries with no linked session are never watermarked."""
+    with db() as c:
+        rows = c.execute("SELECT paid_full FROM inquiries WHERE gallery=?", (slug,)).fetchall()
+    return any(not r["paid_full"] for r in rows)
+
+
+def watermarked(g, name, kind):
+    """Path to a watermarked copy of a gallery photo (kind: "thumb" or "photo"), made on first use.
+    Returns None if Pillow isn't installed or the copy can't be made."""
+    if not HAVE_PIL:
+        return None
+    src = g["folder"] / name
+    out = g["folder"] / ".watermarked" / kind / name
+    if out.is_file() and out.stat().st_mtime >= src.stat().st_mtime:
+        return out
+    with WM_LOCK:  # one at a time keeps a Pi's memory in check
+        if out.is_file() and out.stat().st_mtime >= src.stat().st_mtime:
+            return out
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(src) as im:
+                im = ImageOps.exif_transpose(im).convert("RGB")
+                im.thumbnail((900, 900) if kind == "thumb" else (2000, 2000))
+                with Image.open(WATERMARK) as wm:
+                    mark = wm.convert("RGBA")
+                mark = mark.crop(mark.getbbox())
+                w = max(80, im.width // 4)
+                mark = mark.resize((w, max(1, round(mark.height * w / mark.width))), Image.LANCZOS)
+                alpha = mark.getchannel("A")
+                light = Image.new("RGBA", mark.size, (255, 255, 255, 0))
+                light.putalpha(alpha.point(lambda a: a * 50 // 100))
+                shade = Image.new("RGBA", mark.size, (0, 0, 0, 0))
+                shade.putalpha(alpha.point(lambda a: a * 22 // 100))
+                tile = Image.new("RGBA", (mark.width + 2, mark.height + 2), (0, 0, 0, 0))
+                tile.alpha_composite(shade, (2, 2))  # a faint shadow so it shows on light photos too
+                tile.alpha_composite(light)
+                layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+                step_x, step_y = round(mark.width * 1.6), round(mark.height * 1.9)
+                for row, y in enumerate(range(-mark.height // 2, im.height, step_y)):
+                    for x in range(-mark.width + (row % 2) * step_x // 2, im.width, step_x):
+                        cx, cy = max(0, -x), max(0, -y)  # alpha_composite can't start off the edge, so trim
+                        layer.alpha_composite(tile, (x + cx, y + cy), (cx, cy))
+                im = Image.alpha_composite(im.convert("RGBA"), layer).convert("RGB")
+                tmp = out.with_name(out.name + ".tmp")
+                im.save(tmp, "JPEG", quality=82, optimize=True)
+                tmp.replace(out)
+            return out
+        except Exception as exc:
+            print(f"watermark failed for {name}: {exc}", file=sys.stderr)
+            return None
+
+
 def make_thumb(path):
     if not HAVE_PIL:
         return
@@ -1594,7 +1652,9 @@ class Handler(BaseHTTPRequestHandler):
                     f'<input type="hidden" name="what" value="{what}">'
                     f'<button class="btn ghost small"><span class="check" aria-hidden="true"></span>Mark {label.lower()}</button></form>')
         if r["gallery"] and read_gallery(r["gallery"]):
-            gallery_btn = f'<a class="btn ghost small" href="/admin/galleries/{esc(r["gallery"])}">View gallery</a>'
+            gallery_btn = (f'<a class="btn ghost small" href="/admin/galleries/{esc(r["gallery"])}"'
+                           + ('' if r["paid_full"] else ' title="Watermarked for the client until this session is paid in full"')
+                           + f'>View gallery{"" if r["paid_full"] else " (watermarked)"}</a>')
         else:
             gallery_btn = f'<a class="btn ghost small" href="/admin/galleries/new?session={sid}">Create gallery</a>'
         client_btn = (f'<a class="btn ghost small" href="/admin/clients/{r["client_id"]}">View client</a>' if r["client_id"] else
@@ -1664,6 +1724,10 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute(f"UPDATE inquiries SET {col}=? WHERE id=?", (today, sid))
                 if col == "paid_full":  # paid in full covers the deposit too
                     c.execute("UPDATE inquiries SET deposit_paid=? WHERE id=? AND deposit_paid IS NULL", (today, sid))
+                    r = c.execute("SELECT gallery FROM inquiries WHERE id=?", (sid,)).fetchone()
+                    g = read_gallery(r["gallery"]) if r and r["gallery"] else None
+                    if g:  # watermarked copies aren't needed any more
+                        shutil.rmtree(g["folder"] / ".watermarked", ignore_errors=True)
         self.redirect(f"/admin/sessions?status={self.session_tab(sid)}&done=payment-saved#s{sid}")
 
     def session_tab(self, sid):
@@ -2151,6 +2215,12 @@ class Handler(BaseHTTPRequestHandler):
     </figure>""" for n in g["photos"])
             status = ("This gallery has expired, so the code no longer opens it." if g["expired"]
                       else "This gallery is live. Clients can open it with the code.")
+            if gallery_unpaid(g["slug"]):
+                status += (" The session isn't marked paid in full yet, so the client sees watermarked previews"
+                           " and can't download. Marking it paid in full removes the watermark right away.")
+                if not HAVE_PIL:
+                    status += (" Watermarking needs Pillow on the Pi (sudo apt install -y python3-pil, then restart);"
+                               " until then the photos won't load for the client.")
             extra = f"""
   <section class="share card-pad">
     <h2>Send it to your client</h2>
@@ -3111,9 +3181,18 @@ class Handler(BaseHTTPRequestHandler):
         if not rest or rest == [""]:
             return self.gallery_page(g)
         if rest[0] == "download.zip":
+            if gallery_unpaid(g["slug"]):
+                return self.redirect(f"/gallery/{g['slug']}")
             return self.gallery_zip(g)
         if len(rest) == 2 and rest[0] in ("photo", "thumb", "download") and rest[1] in g["photos"]:
             name = rest[1]
+            if gallery_unpaid(g["slug"]):  # only watermarked previews until the session is paid in full
+                if rest[0] == "download":
+                    return self.redirect(f"/gallery/{g['slug']}")
+                wm = watermarked(g, name, rest[0])
+                if not wm:
+                    return self.send(503, "This photo isn't ready yet.", "text/plain")
+                return self.serve_file(wm.parent, wm.name)
             if rest[0] == "thumb" and (g["folder"] / "thumbs" / name).is_file():
                 return self.serve_file(g["folder"] / "thumbs", name)
             return self.serve_file(g["folder"], name,
@@ -3122,18 +3201,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def gallery_page(self, g):
         base = f"/gallery/{g['slug']}"
+        unpaid = gallery_unpaid(g["slug"])
         items = "".join(
-            f'<figure><a href="{base}/photo/{quote(n)}" class="lb" data-download="{base}/download/{quote(n)}">'
+            f'<figure><a href="{base}/photo/{quote(n)}" class="lb"'
+            + ("" if unpaid else f' data-download="{base}/download/{quote(n)}"') + ">"
             f'<img src="{base}/thumb/{quote(n)}" alt="{esc(g["title"])} photo {i}" loading="lazy"></a>'
-            f'<figcaption><a href="{base}/download/{quote(n)}">Download</a></figcaption></figure>'
+            + ("" if unpaid else f'<figcaption><a href="{base}/download/{quote(n)}">Download</a></figcaption>')
+            + "</figure>"
             for i, n in enumerate(g["photos"], 1))
+        if unpaid:
+            link = CFG["business"]["payment_link"].strip()
+            pay = f' <a href="{esc(link)}" rel="noopener">Pay your balance</a>' if link else ""
+            download = ('<p class="notice">These are watermarked previews. Full-resolution downloads unlock as soon as '
+                        f'your balance is paid.{pay}</p>')
+        else:
+            download = f'<p><a class="btn" href="{base}/download.zip">Download all ({len(g["photos"])} photos)</a></p>' 
         exp = f'<p class="muted">This gallery is available until {esc(g["expires"])}.</p>' if g["expires"] else ""
         body = f"""
 <section class="gallery-head">
   <p class="eyebrow">Your gallery</p>
   <h1>{esc(g['title'])}</h1>
   {f'<p class="lede">{esc(g["note"])}</p>' if g['note'] else ''}
-  <p><a class="btn" href="{base}/download.zip">Download all ({len(g['photos'])} photos)</a></p>
+  {download if g['photos'] else ''}
   {exp}
 </section>
 <section class="client-grid">{items or '<p class="muted">Photos are on their way.</p>'}</section>"""
