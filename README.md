@@ -92,7 +92,9 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   `payment_link`) to have them filled in automatically.
 - **Mini sessions:** set up a mini session day (date, place, start and end
   time, minutes per family, break between families, price, details) and set it
-  to **Open**. Families pick a free time at `/minis` and it's theirs; nobody can
+  to **Open**. Pick the place from the site's **Locations** (its photo becomes the
+  booking page banner, with its map and details below) or choose **Other** and type
+  it in. Families pick a free time at `/minis` and it's theirs; nobody can
   book the same slot twice. Each booking is added to the client list, shows on
   the event's schedule (where you can cancel it to free the time), and is
   emailed to you if email is set up. Families get a confirmation page with an

@@ -305,7 +305,7 @@ with db() as _c:
                     "adults": "INTEGER", "kids": "INTEGER"},
         "promo_codes": {"session_types": "TEXT"},
         "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
-                        "status": "TEXT NOT NULL DEFAULT 'draft'"},
+                        "status": "TEXT NOT NULL DEFAULT 'draft'", "location_slug": "TEXT"},
         "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
                           "ref": "TEXT", "ip": "TEXT", "adults": "INTEGER", "kids": "INTEGER",
                           "promo_code": "TEXT", "promo_offer": "TEXT", "promo_discount": "TEXT"},
@@ -943,6 +943,11 @@ def mini_event(event_id=None, slug=None):
         if slug is not None:
             return c.execute("SELECT * FROM mini_events WHERE slug=?", (slug,)).fetchone()
         return c.execute("SELECT * FROM mini_events WHERE id=?", (event_id,)).fetchone()
+
+
+def mini_location(ev):
+    """The site location a mini session is at, or None when its location was typed in."""
+    return location_by_slug(ev["location_slug"]) if ev["location_slug"] else None
 
 
 def mini_slots(ev):
@@ -3144,8 +3149,12 @@ class Handler(BaseHTTPRequestHandler):
                 slots = mini_slots(ev)
                 left = len(slots) - len(mini_booked(ev["id"]))
                 avail = (f'{left} of {len(slots)} spots open' if left > 0 else 'Fully booked')
+                loc = mini_location(ev)
+                img = (f'<img src="/static/img/photos/{esc(loc["photo"])}" alt="{esc(loc["name"])}" width="1600" '
+                       f'height="1000" loading="lazy">' if loc and loc["photo"] and (PHOTOS / loc["photo"]).is_file() else "")
                 cards.append(f"""
       <a class="card mini-card" href="/minis/{esc(ev['slug'])}">
+        {img}
         <div class="card-body">
           <p class="eyebrow">{esc(nice_date(ev['date']))}</p>
           <h3>{esc(ev['title'])}</h3>
@@ -3221,20 +3230,58 @@ class Handler(BaseHTTPRequestHandler):
         <div class="full"><button class="btn" type="submit">Reserve my time</button></div>
       </form>"""
         details = esc(ev["details"]).replace("\n", "<br>") if ev["details"] else ""
-        body = f"""
+        loc = mini_location(ev)
+        photo = loc["photo"] if loc and loc["photo"] and (PHOTOS / loc["photo"]).is_file() else ""
+        where = (f'<a href="/locations/{esc(loc["slug"])}">{esc(loc["name"])}</a>' if loc and loc["shown"]
+                 else esc(ev["location"]))
+        heading = f"""<p class="eyebrow">{esc(nice_date(ev['date']))}</p>
+        <h1>{esc(ev['title'])}</h1>"""
+        hero = ""
+        if photo:  # the location's photo as the banner, with the title over it
+            hero = f"""<section class="page-hero vf">
+  <img src="/static/img/photos/{esc(photo)}" alt="{esc(loc['name'])}" width="2400" height="1350">
+  <div class="wrap">
+    {heading}
+  </div>
+</section>
+"""
+            heading = ""
+        about = ""
+        if loc:
+            q = (loc["map"] or "").strip()
+            themap = (f"""<div class="map-embed"><iframe src="{esc(map_embed_url(q))}" title="Map of {esc(loc['name'])}"
+         loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe></div>""" if q else "")
+            links = "".join([
+                f'<a class="btn ghost" href="https://www.google.com/maps/search/?api=1&amp;query={esc(quote(q))}" '
+                f'target="_blank" rel="noopener">Directions</a>' if q else "",
+                f'<a class="btn ghost" href="/locations/{esc(loc["slug"])}">More about {esc(loc["name"])}</a>'
+                if loc["shown"] else ""])
+            about = f"""
+<section class="section cream">
+  <div class="wrap mini-loc">
+    <div class="prose">
+      <p class="eyebrow">The location</p>
+      <h2>{text_to_html(loc['heading'] or loc['name'])}</h2>
+      {paragraphs(loc['intro'] or loc['summary'], ' class="lede"')}
+      {f'<h3>Good to know</h3>{paragraphs(loc["tips"])}' if (loc['tips'] or '').strip() else ''}
+      {f'<p class="actions">{links}</p>' if links else ''}
+    </div>
+    <div>{themap}</div>
+  </div>
+</section>"""
+        body = f"""{hero}
 <section class="section">
   <div class="wrap">
     <p class="crumbs-public"><a href="/minis">All mini sessions</a></p>
     <div class="book-grid">
       <div>
-        <p class="eyebrow">{esc(nice_date(ev['date']))}</p>
-        <h1>{esc(ev['title'])}</h1>
+        {heading}
         {book}
       </div>
       <aside class="aside-box">
         <h3>The details</h3>
         <p><strong>When:</strong> {esc(nice_date(ev['date']))}, {nice_time(ev['start_time'])} to {nice_time(ev['end_time'])}<br>
-           <strong>Where:</strong> {esc(ev['location'])}<br>
+           <strong>Where:</strong> {where}<br>
            <strong>Length:</strong> {int(ev['slot_minutes'])} minutes<br>
            {f"<strong>Price:</strong> {esc(ev['price'])}" if ev['price'] else ''}</p>
         {f'<p>{details}</p>' if details else ''}
@@ -3242,7 +3289,7 @@ class Handler(BaseHTTPRequestHandler):
       </aside>
     </div>
   </div>
-</section>"""
+</section>{about}"""
         self.page(body, ev["title"], f"Mini session on {nice_date(ev['date'])} at {ev['location']}.", status=status)
 
     def mini_book(self, slug):
@@ -3416,13 +3463,24 @@ class Handler(BaseHTTPRequestHandler):
         opts = "".join(f'<option value="{s}"{" selected" if (ev["status"] if ev else "open") == s else ""}>'
                        f'{ {"draft": "Draft (hidden)", "open": "Open for booking", "closed": "Closed"}[s] }</option>'
                        for s in MINI_STATUSES)
+        locs = locations(shown_only=False)
+        linked = ev["location_slug"] if ev and any(r["slug"] == ev["location_slug"] for r in locs) else ""
+        if not ev and locs:
+            linked = locs[0]["slug"]
+        loc_opts = "".join(f'<option value="{esc(r["slug"])}"{" selected" if r["slug"] == linked else ""}>'
+                           f'{esc(r["name"])}</option>' for r in locs)
         form = f"""
   <form method="post" action="/admin/minis/save" class="form card-pad">
     <input type="hidden" name="id" value="{ev['id'] if ev else ''}">
     <label class="full">Title<input name="title" required maxlength="120" value="{v('title', 'Fall Mini Sessions')}"></label>
     <label>Date<input name="date" type="date" required value="{v('date')}"></label>
     <label>Status<select name="status">{opts}</select></label>
-    <label class="full">Location<input name="location" maxlength="200" value="{v('location')}" placeholder="Patapsco Valley State Park, Avalon area"></label>
+    <label>Location<select name="location_slug" data-other="mini-location">{loc_opts}
+      <option value=""{"" if linked else " selected"}>Other (type it in)</option></select></label>
+    <label id="mini-location"{" hidden" if linked else ""}>Other location<input name="location" maxlength="200"
+      value="{"" if linked else v('location')}" placeholder="e.g. the Smiths' farm, 123 Main St"></label>
+    <p class="full muted small">Picking one of the site's locations puts its photo at the top of the booking page,
+       with its map and details below the times.</p>
     <label>First slot starts<input name="start_time" type="time" required value="{v('start_time', '09:00')}"></label>
     <label>Last slot ends by<input name="end_time" type="time" required value="{v('end_time', '12:00')}"></label>
     <label>Minutes per session<input name="slot_minutes" type="number" min="5" max="240" required value="{v('slot_minutes', '20')}"></label>
@@ -3475,8 +3533,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def admin_mini_save(self, form):
         f = {k: (form.get(k) or "").strip() for k in
-             ("id", "title", "date", "status", "location", "start_time", "end_time", "slot_minutes",
-              "gap_minutes", "price", "details")}
+             ("id", "title", "date", "status", "location", "location_slug", "start_time", "end_time",
+              "slot_minutes", "gap_minutes", "price", "details")}
+        loc = location_by_slug(f["location_slug"]) if f["location_slug"] else None
+        if loc:
+            f["location"] = loc["name"]
+        f["location_slug"] = loc["slug"] if loc else None
         ok = (f["title"] and re.fullmatch(r"\d{4}-\d{2}-\d{2}", f["date"])
               and re.fullmatch(r"\d{2}:\d{2}", f["start_time"]) and re.fullmatch(r"\d{2}:\d{2}", f["end_time"])
               and f["slot_minutes"].isdigit() and 5 <= int(f["slot_minutes"]) <= 240)
@@ -3486,19 +3548,21 @@ class Handler(BaseHTTPRequestHandler):
         gap = int(f["gap_minutes"]) if f["gap_minutes"].isdigit() else 0
         status = f["status"] if f["status"] in MINI_STATUSES else "draft"
         vals = (f["title"][:120], f["date"], f["location"][:200], f["start_time"], f["end_time"],
-                int(f["slot_minutes"]), min(gap, 120), f["price"][:60], f["details"][:3000], status)
+                int(f["slot_minutes"]), min(gap, 120), f["price"][:60], f["details"][:3000], status, f["location_slug"])
         with DB_LOCK, db() as c:
             if f["id"].isdigit():
                 eid = int(f["id"])
                 c.execute("""UPDATE mini_events SET title=?, date=?, location=?, start_time=?, end_time=?,
-                             slot_minutes=?, gap_minutes=?, price=?, details=?, status=? WHERE id=?""", (*vals, eid))
+                             slot_minutes=?, gap_minutes=?, price=?, details=?, status=?, location_slug=?
+                             WHERE id=?""", (*vals, eid))
             else:
                 base = slugify(f"{f['title']} {f['date']}")
                 slug, n = base, 2
                 while c.execute("SELECT 1 FROM mini_events WHERE slug=?", (slug,)).fetchone():
                     slug, n = f"{base}-{n}", n + 1
                 eid = c.execute("""INSERT INTO mini_events (title, date, location, start_time, end_time, slot_minutes,
-                                   gap_minutes, price, details, status, created, slug) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                   gap_minutes, price, details, status, location_slug, created, slug)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (*vals, time.strftime("%Y-%m-%d"), slug)).lastrowid
         self.redirect(f"/admin/minis/{eid}?done=mini-saved")
 

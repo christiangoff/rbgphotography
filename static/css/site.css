@@ -389,3 +389,7 @@ pre.email-body { white-space: pre-wrap; font: 300 .92rem/1.55 var(--sans); backg
 .promo-status.ok { color: #3E6B45; }
 .promo-status.bad { color: #9B3D22; }
 .tag.promo { background: #F3E3D3; color: #8A4A26; }
+
+/* Mini session page: the location's details beside its map */
+.mini-loc { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 3rem; align-items: start; }
+@media (max-width: 900px) { .mini-loc { grid-template-columns: 1fr; } }

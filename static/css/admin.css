@@ -80,3 +80,4 @@ label.toggle input { width: auto; margin: 0; }
 .admin-thumb.featured { outline: 3px solid var(--terracotta); outline-offset: -3px; }
 label.toggle.small { font-size: .85rem; padding: 0; align-self: auto; }
 .photo-card .feature-form { flex-basis: 100%; }
+[hidden] { display: none !important; }

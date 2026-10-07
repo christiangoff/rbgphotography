@@ -157,6 +157,14 @@ var photoTool = (function () {
     wrap.appendChild(button(1, "+", "More " + name));
   });
 
+  // A dropdown with an "Other" choice (value "") shows a box to type it in
+  document.querySelectorAll("select[data-other]").forEach(function (sel) {
+    var box = document.getElementById(sel.dataset.other);
+    function sync() { box.hidden = sel.value !== ""; if (!box.hidden) { var i = box.querySelector("input"); if (i && document.activeElement === sel) i.focus(); } }
+    sel.addEventListener("change", sync);
+    sync();
+  });
+
   // Template picker on the email screen reloads with the chosen template
   document.querySelectorAll("select[data-autosubmit]").forEach(function (sel) {
     sel.addEventListener("change", function () { sel.form.submit(); });
