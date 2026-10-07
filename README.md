@@ -141,8 +141,10 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   per session type; a session's price starts from it and goes into emails as
   `{price}` (and `{balance}`, less any deposit paid and promo discount). Create
   promo codes with what they offer, an optional discount ($ or %), expiry date,
-  use limit and the session types it works for. The Book page checks a code before the form can be sent, and
-  sessions that used one show a **Promo** tag.
+  use limit and the session types it works for. The Book page and the mini session
+  spot picker check a code before the form can be sent (a code limited to "Mini session"
+  or "Fall / holiday mini" works for mini spots), and sessions and mini bookings that
+  used one show a **Promo** tag.
 - **Locations:** add, edit, hide, reorder and delete location pages. Each has
   its own page at `/locations/<name>` with a photo (cropped in the browser), a
   Google Map of the address you enter, favorite spots and tips. Cards appear on

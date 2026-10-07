@@ -307,7 +307,8 @@ with db() as _c:
         "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
                         "status": "TEXT NOT NULL DEFAULT 'draft'"},
         "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
-                          "ref": "TEXT", "ip": "TEXT", "adults": "INTEGER", "kids": "INTEGER"},
+                          "ref": "TEXT", "ip": "TEXT", "adults": "INTEGER", "kids": "INTEGER",
+                          "promo_code": "TEXT", "promo_offer": "TEXT", "promo_discount": "TEXT"},
     }.items():
         _have = {r[1] for r in _c.execute(f"PRAGMA table_info({_table})")}
         for _col, _ddl in _cols.items():
@@ -1115,9 +1116,20 @@ def clean_promo(code):
     return re.sub(r"[^A-Z0-9_-]", "", (code or "").strip().upper())[:40]
 
 
-def promo_uses(code):
+def promo_uses(code=None):
+    """How many bookings used a promo code (session requests plus booked mini session spots).
+    Without a code, {code: count} for every code."""
     with db() as c:
-        return c.execute("SELECT COUNT(*) FROM inquiries WHERE promo_code=?", (code,)).fetchone()[0]
+        rows = c.execute("""SELECT promo_code, COUNT(*) FROM (
+                              SELECT promo_code FROM inquiries WHERE promo_code IS NOT NULL
+                              UNION ALL SELECT promo_code FROM mini_bookings
+                              WHERE promo_code IS NOT NULL AND status='booked') GROUP BY promo_code""").fetchall()
+    uses = {r[0]: r[1] for r in rows}
+    return uses if code is None else uses.get(code, 0)
+
+
+# Promo codes limited to either of these work when booking a mini session spot
+MINI_TYPES = ("Mini session", "Fall / holiday mini")
 
 
 def promo_types(r):
@@ -1127,7 +1139,8 @@ def promo_types(r):
 
 def check_promo(code, session_type=None):
     """(promo row, None) for a code a client can use right now, else (None, reason to show them).
-    With session_type, also checks the code covers that kind of session."""
+    With session_type (one type, or a tuple of types any of which will do), also checks the code
+    covers that kind of session."""
     code = clean_promo(code)
     with db() as c:
         r = c.execute("SELECT * FROM promo_codes WHERE code=?", (code,)).fetchone() if code else None
@@ -1138,7 +1151,8 @@ def check_promo(code, session_type=None):
     if r["max_uses"] and promo_uses(code) >= r["max_uses"]:
         return None, "That promo code has already been used up."
     allowed = promo_types(r)
-    if session_type is not None and allowed and session_type not in allowed:
+    wanted = session_type if isinstance(session_type, tuple) else (session_type,)
+    if session_type is not None and allowed and not set(wanted) & set(allowed):
         return None, f"That promo code is only for: {', '.join(allowed)}."
     return r, None
 
@@ -1496,7 +1510,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(429, json.dumps({"ok": False, "error": "Too many tries. Please try again later."}),
                              "application/json", {"Cache-Control": "no-store"})
         q = self.query()
-        promo, err = check_promo(q.get("code", ""), q.get("session") if "session" in q else None)
+        kind = q.get("session") if "session" in q else None
+        promo, err = check_promo(q.get("code", ""), MINI_TYPES if kind == "minis" else kind)
         body = {"ok": True, "code": promo["code"], "offer": promo["offer"]} if promo else {"ok": False, "error": err}
         self.send(200, json.dumps(body), "application/json", {"Cache-Control": "no-store"})
 
@@ -1973,12 +1988,19 @@ class Handler(BaseHTTPRequestHandler):
                     if r["dates"]:
                         ctx["hint"] = f"They asked for: {r['dates']}"
             if q.get("booking", "").isdigit():
-                r = c.execute("""SELECT b.*, e.title, e.date, e.location, e.id AS eid FROM mini_bookings b
+                r = c.execute("""SELECT b.*, e.title, e.date, e.location, e.price AS ev_price, e.id AS eid FROM mini_bookings b
                                  JOIN mini_events e ON e.id=b.event_id WHERE b.id=?""", (int(q["booking"]),)).fetchone()
                 if r:
                     ctx.update(to=r["email"], who=r["name"], client_id=r["client_id"], back=f"/admin/minis/{r['eid']}")
                     v.update(name=r["name"], session_type="mini session", date=nice_date(r["date"]),
                              time=nice_time(r["slot"]), location=r["location"])
+                    if r["ev_price"]:
+                        v["price"] = r["ev_price"]
+                    if r["promo_code"]:
+                        v.update(promo_code=r["promo_code"], promo_offer=r["promo_offer"])
+                        off = discount_amount(v.get("price", ""), r["promo_discount"])
+                        if off:
+                            v["discount"] = fmt_money(off)
             if q.get("gallery"):
                 g = read_gallery(q["gallery"])
                 if g:
@@ -2495,8 +2517,7 @@ class Handler(BaseHTTPRequestHandler):
             for i, t in enumerate(SESSION_TYPES) if t != "Not sure yet")
         with db() as c:
             promos = c.execute("SELECT * FROM promo_codes ORDER BY active DESC, id DESC").fetchall()
-            uses = dict(c.execute("SELECT promo_code, COUNT(*) FROM inquiries WHERE promo_code IS NOT NULL "
-                                  "GROUP BY promo_code").fetchall())
+        uses = promo_uses()
         today = time.strftime("%Y-%m-%d")
         trs = []
         for r in promos:
@@ -3183,7 +3204,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             err = f'<p class="form-error full" role="alert">{esc(error)}</p>' if error else ""
             book = f"""
-      <form class="form" method="post" action="/minis/{esc(ev['slug'])}/book">
+      <form class="form" id="mini-form" method="post" action="/minis/{esc(ev['slug'])}/book">
         {err}
         <fieldset class="full slots"><legend>Choose a time <span class="opt">({left} open)</span></legend>{buttons}</fieldset>
         <label>Your name<input name="name" autocomplete="name" required maxlength="120" value="{v('name')}"></label>
@@ -3191,6 +3212,11 @@ class Handler(BaseHTTPRequestHandler):
         <label>Phone <span class="opt">(optional)</span><input name="phone" type="tel" autocomplete="tel" maxlength="40" value="{v('phone')}"></label>
         {pickers(*headcount(form))}
         <label class="full">Anything Rachel should know? <span class="opt">(kids' ages, pets, optional)</span><textarea name="notes" maxlength="2000">{v('notes')}</textarea></label>
+        <input type="hidden" name="session_type" value="minis">
+        <label class="full promo-field">Promo code <span class="opt">(optional)</span>
+          <span class="promo-row"><input name="promo" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" value="{v('promo')}">
+          <button class="btn ghost small" type="button" data-promo-check>Apply</button></span>
+          <span class="promo-status" aria-live="polite"></span></label>
         <div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
         <div class="full"><button class="btn" type="submit">Reserve my time</button></div>
       </form>"""
@@ -3235,6 +3261,13 @@ class Handler(BaseHTTPRequestHandler):
         if not data["name"] or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", data["email"]):
             return self.mini_page(ev, "Please include your name and a valid email address.", form, 400)
         ip = self.client_ip()
+        promo = None
+        if clean_promo(form.get("promo")):
+            if not PROMO_LIMIT.allow(ip):
+                return self.mini_page(ev, "Too many promo code tries. Please try again later.", form, 429)
+            promo, err = check_promo(form.get("promo"), MINI_TYPES)
+            if err:
+                return self.mini_page(ev, err, form, 400)
         if not INQUIRY_LIMIT.allow(ip):
             return self.mini_page(ev, "We've received several requests from you already. Rachel will be in touch.", form, 429)
         ref = secrets.token_urlsafe(9)
@@ -3251,9 +3284,12 @@ class Handler(BaseHTTPRequestHandler):
                                     (time.strftime("%Y-%m-%d"), data["name"], data["email"], data["phone"],
                                      f"Booked mini session: {ev['title']}", adults, kids)).lastrowid
                 c.execute("""INSERT INTO mini_bookings (created, event_id, slot, name, email, phone, people, notes,
-                             client_id, ref, ip, adults, kids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                             client_id, ref, ip, adults, kids, promo_code, promo_offer, promo_discount)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (time.strftime("%Y-%m-%d %H:%M"), ev["id"], data["slot"], data["name"], data["email"],
-                           data["phone"], data["people"], data["notes"], cid, ref, ip, adults, kids))
+                           data["phone"], data["people"], data["notes"], cid, ref, ip, adults, kids,
+                           promo["code"] if promo else None, promo["offer"] if promo else None,
+                           promo["discount"] if promo else None))
         except sqlite3.IntegrityError:  # someone else just took that slot
             form["slot"] = ""
             return self.mini_page(ev, f"Sorry, {nice_time(data['slot'])} was just booked by someone else. Please pick another time.",
@@ -3264,13 +3300,15 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=send_mail, daemon=True, args=(
             f"Mini session booked: {data['name']}, {when}",
             f"{data['name']} booked {ev['title']}.\n\nWhen: {when}\nWhere: {ev['location']}\n"
-            f"Email: {data['email']}\nPhone: {data['phone']}\nWho's coming: {data['people']}\nNotes: {data['notes']}\n\n"
+            f"Email: {data['email']}\nPhone: {data['phone']}\nWho's coming: {data['people']}\nNotes: {data['notes']}\n"
+            + (f"Promo code: {promo['code']} ({promo['offer']})\n" if promo else "") + "\n"
             f"Manage it at {site}/admin/minis/{ev['id']}",
             CFG["email"]["notify_address"] or b["email"], data["email"])).start()
         threading.Thread(target=send_mail, daemon=True, args=(
             f"You're booked: {ev['title']}",
             f"Hi {data['name'].split()[0]},\n\nYou're booked for {ev['title']}.\n\nWhen: {when}\n"
-            f"Where: {ev['location']}\n\nPlease arrive a few minutes early. If you need to change your time, "
+            f"Where: {ev['location']}\n" + (f"Promo code: {promo['code']} ({promo['offer']})\n" if promo else "")
+            + f"\nPlease arrive a few minutes early. If you need to change your time, "
             f"just reply to this email.\n\nSee you soon!\n{b['photographer']}\n{b['name']}",
             data["email"], b["email"]), kwargs={"log": {"kind": "Mini session booked", "client_id": cid}}).start()
         cookie = f"mini_{ev['id']}={ref}; Path=/minis/{slug}; HttpOnly; SameSite=Lax; Max-Age={60 * 60 * 24 * 60}"
@@ -3404,6 +3442,9 @@ class Handler(BaseHTTPRequestHandler):
                 if bk:
                     who = (f'<a href="/admin/clients/{bk["client_id"]}"><strong>{esc(bk["name"])}</strong></a>'
                            if bk["client_id"] else f'<strong>{esc(bk["name"])}</strong>')
+                    if bk["promo_code"]:
+                        who += (f' <span class="tag promo" title="{esc(bk["promo_offer"])}">Promo {esc(bk["promo_code"])}</span>'
+                                f'<br><span class="muted small">{esc(bk["promo_offer"])}</span>')
                     action = (f'<form method="post" action="/admin/minis/{ev["id"]}/cancel" '
                               f'data-confirm="Cancel {esc(bk["name"])}\'s {nice_time(t)} booking? The time opens up again.">'
                               f'<input type="hidden" name="booking" value="{bk["id"]}"><button class="link-btn">Cancel</button></form>')

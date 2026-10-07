@@ -73,6 +73,50 @@
     wrap.appendChild(button(1, "+", "More " + name));
   });
 
+  // Promo codes are checked as soon as they're entered, and again before sending.
+  // Returns gate(go): calls go() once the code (if any) is known to be valid.
+  function promoBox(form, params) {
+    var promo = form.querySelector("input[name=promo]"), promoMsg = form.querySelector(".promo-status");
+    var checked = { code: "", ok: true }, kind = form.querySelector("[name=session_type]");
+    if (!promo) return function (go) { go(); };
+    function promoKey() { return promo.value.trim().toUpperCase() + "|" + (kind ? kind.value : ""); }
+    function checkPromo() {
+      var code = promo.value.trim();
+      if (!code) { checked = { code: "", ok: true }; promoMsg.textContent = ""; promoMsg.className = "promo-status"; return Promise.resolve(true); }
+      if (checked.code === promoKey()) return Promise.resolve(checked.ok);
+      promoMsg.textContent = "Checking…"; promoMsg.className = "promo-status";
+      var key = promoKey();
+      return fetch("/api/promo?code=" + encodeURIComponent(code) + "&session=" + encodeURIComponent(kind ? kind.value : ""))
+        .then(function (r) { return r.json(); }).then(function (d) {
+        checked = { code: key, ok: !!d.ok };
+        promoMsg.textContent = d.ok ? "\u2713 " + d.offer : d.error;
+        promoMsg.className = "promo-status " + (d.ok ? "ok" : "bad");
+        return checked.ok;
+      }).catch(function () { promoMsg.textContent = ""; return true; });  // the server checks it again anyway
+    }
+    if (params.get("promo") && !promo.value) promo.value = params.get("promo");
+    promo.addEventListener("change", checkPromo);
+    form.querySelector("[data-promo-check]").addEventListener("click", checkPromo);
+    if (kind) kind.addEventListener("change", function () { if (promo.value.trim()) checkPromo(); });
+    promo.addEventListener("input", function () { if (checked.code !== promoKey()) { promoMsg.textContent = ""; promoMsg.className = "promo-status"; } });
+    if (promo.value) checkPromo();
+    return function (go) {
+      if (!promo.value.trim()) return go();
+      checkPromo().then(function (ok) { if (ok) go(); else promo.focus(); });
+    };
+  }
+
+  // Mini session spot picker: a normal post, once any promo code checks out
+  var mini = document.getElementById("mini-form");
+  if (mini && window.fetch) {
+    var miniGate = promoBox(mini, new URLSearchParams(location.search)), miniOk = false;
+    mini.addEventListener("submit", function (e) {
+      if (miniOk) return;
+      e.preventDefault();
+      miniGate(function () { miniOk = true; mini.requestSubmit ? mini.requestSubmit() : mini.submit(); });
+    });
+  }
+
   // Book form: submit in place, fall back to a normal post on any error
   var form = document.getElementById("inquiry-form");
   if (form && window.fetch) {
@@ -86,40 +130,10 @@
     var place = params.get("location"), where = form.querySelector("input[name=location]");
     if (place && where && !where.value) where.value = place;
 
-    // Promo codes are checked as soon as they're entered, and again before sending
-    var promo = form.querySelector("input[name=promo]"), promoMsg = form.querySelector(".promo-status");
-    var checked = { code: "", ok: true }, kind = form.querySelector("select[name=session_type]");
-    function promoKey() { return promo.value.trim().toUpperCase() + "|" + (kind ? kind.value : ""); }
-    function checkPromo() {
-      var code = promo ? promo.value.trim() : "";
-      if (!code) { checked = { code: "", ok: true }; promoMsg.textContent = ""; promoMsg.className = "promo-status"; return Promise.resolve(true); }
-      if (checked.code === promoKey()) return Promise.resolve(checked.ok);
-      promoMsg.textContent = "Checking…"; promoMsg.className = "promo-status";
-      var key = promoKey();
-      return fetch("/api/promo?code=" + encodeURIComponent(code) + "&session=" + encodeURIComponent(kind ? kind.value : ""))
-        .then(function (r) { return r.json(); }).then(function (d) {
-        checked = { code: key, ok: !!d.ok };
-        promoMsg.textContent = d.ok ? "\u2713 " + d.offer : d.error;
-        promoMsg.className = "promo-status " + (d.ok ? "ok" : "bad");
-        return checked.ok;
-      }).catch(function () { promoMsg.textContent = ""; return true; });  // the server checks it again anyway
-    }
-    if (promo) {
-      if (params.get("promo")) promo.value = params.get("promo");
-      promo.addEventListener("change", checkPromo);
-      form.querySelector("[data-promo-check]").addEventListener("click", checkPromo);
-      if (kind) kind.addEventListener("change", function () { if (promo.value.trim()) checkPromo(); });
-      promo.addEventListener("input", function () { if (checked.code !== promoKey()) { promoMsg.textContent = ""; promoMsg.className = "promo-status"; } });
-      if (promo.value) checkPromo();
-    }
-
+    var gate = promoBox(form, params);
     form.addEventListener("submit", function (e) {
       e.preventDefault();
-      if (promo && promo.value.trim() && checked.code !== promoKey()) {
-        return checkPromo().then(function (ok) { if (ok) form.requestSubmit ? form.requestSubmit() : send(); else promo.focus(); });
-      }
-      if (promo && promo.value.trim() && !checked.ok) { promo.focus(); return; }
-      send();
+      gate(function () { send(); });
     });
     function send() {
       var btn = form.querySelector("button[type=submit]");
