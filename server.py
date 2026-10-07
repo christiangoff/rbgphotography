@@ -302,6 +302,7 @@ with db() as _c:
         "clients": {"created": "TEXT NOT NULL DEFAULT ''", "email": "TEXT", "phone": "TEXT",
                     "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
                     "adults": "INTEGER", "kids": "INTEGER"},
+        "promo_codes": {"session_types": "TEXT"},
         "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
                         "status": "TEXT NOT NULL DEFAULT 'draft'"},
         "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
@@ -1090,8 +1091,14 @@ def promo_uses(code):
         return c.execute("SELECT COUNT(*) FROM inquiries WHERE promo_code=?", (code,)).fetchone()[0]
 
 
-def check_promo(code):
-    """(promo row, None) for a code a client can use right now, else (None, reason to show them)."""
+def promo_types(r):
+    """Session types a promo code is limited to; empty means any session."""
+    return [t for t in (r["session_types"] or "").split("|") if t]
+
+
+def check_promo(code, session_type=None):
+    """(promo row, None) for a code a client can use right now, else (None, reason to show them).
+    With session_type, also checks the code covers that kind of session."""
     code = clean_promo(code)
     with db() as c:
         r = c.execute("SELECT * FROM promo_codes WHERE code=?", (code,)).fetchone() if code else None
@@ -1101,6 +1108,9 @@ def check_promo(code):
         return None, "That promo code has expired."
     if r["max_uses"] and promo_uses(code) >= r["max_uses"]:
         return None, "That promo code has already been used up."
+    allowed = promo_types(r)
+    if session_type is not None and allowed and session_type not in allowed:
+        return None, f"That promo code is only for: {', '.join(allowed)}."
     return r, None
 
 
@@ -1429,7 +1439,7 @@ class Handler(BaseHTTPRequestHandler):
         if clean_promo(form.get("promo")):
             if not PROMO_LIMIT.allow(ip):
                 return fail("Too many promo code tries. Please try again later.", 429)
-            promo, err = check_promo(form.get("promo"))
+            promo, err = check_promo(form.get("promo"), data["session_type"])
             if err:
                 return fail(err)
         if not INQUIRY_LIMIT.allow(ip):
@@ -1456,7 +1466,8 @@ class Handler(BaseHTTPRequestHandler):
         if not PROMO_LIMIT.allow(self.client_ip()):
             return self.send(429, json.dumps({"ok": False, "error": "Too many tries. Please try again later."}),
                              "application/json", {"Cache-Control": "no-store"})
-        promo, err = check_promo(self.query().get("code", ""))
+        q = self.query()
+        promo, err = check_promo(q.get("code", ""), q.get("session") if "session" in q else None)
         body = {"ok": True, "code": promo["code"], "offer": promo["offer"]} if promo else {"ok": False, "error": err}
         self.send(200, json.dumps(body), "application/json", {"Cache-Control": "no-store"})
 
@@ -2457,7 +2468,8 @@ class Handler(BaseHTTPRequestHandler):
                      "Used up" if r["max_uses"] and n >= r["max_uses"] else "Active")
             trs.append(f"""<tr>
   <td><a href="/admin/pricing?edit={r['id']}#promo"><strong>{esc(r['code'])}</strong></a></td>
-  <td>{esc(r['offer'])}{f'<br><span class="muted">Takes {esc(r["discount"])} off the balance</span>' if r['discount'] else ''}</td>
+  <td>{esc(r['offer'])}{f'<br><span class="muted">Takes {esc(r["discount"])} off the balance</span>' if r['discount'] else ''}
+      <br><span class="muted">{esc(', '.join(promo_types(r))) if promo_types(r) else 'Any session'}</span></td>
   <td class="nowrap">{n}{f' of {r["max_uses"]}' if r['max_uses'] else ''}</td>
   <td class="nowrap">{esc(nice_date(r['expires'])) if r['expires'] else '<span class="muted">Never</span>'}</td>
   <td><span class="tag{' ok' if state == 'Active' else ''}">{state}</span></td></tr>""")
@@ -2479,6 +2491,10 @@ class Handler(BaseHTTPRequestHandler):
     <label>Expires <span class="opt">(optional; last day it works)</span><input name="expires" type="date" value="{v('expires')}"></label>
     <label>Limit <span class="opt">(optional: how many bookings can use it)</span>
       <input name="max_uses" type="number" min="1" max="10000" value="{e['max_uses'] if e and e['max_uses'] else ''}"></label>
+    <fieldset class="full promo-types"><legend>Works for <span class="opt">(leave all unticked for any session)</span></legend>
+      {"".join(f'<label class="toggle"><input type="checkbox" name="t_{i}" value="1"{" checked" if e and t in promo_types(e) else ""}> {esc(t)}</label>'
+               for i, t in enumerate(SESSION_TYPES) if t != "Not sure yet")}
+    </fieldset>
     <label class="toggle"><input type="checkbox" name="active" value="1"{' checked' if not e or e['active'] else ''}> Code works on the Book page</label>
     <div class="full row-actions"><button class="btn small" name="do" value="save">{'Save changes' if e else 'Create promo code'}</button>
       {f'<a class="btn ghost small" href="/admin/pricing#promo">Cancel</a><button class="link-btn danger" name="do" value="delete" data-confirm="Delete {esc(e["code"])}? Sessions that used it keep their note.">Delete</button>' if e else ''}</div>
@@ -2525,16 +2541,17 @@ class Handler(BaseHTTPRequestHandler):
         expires = form.get("expires", "").strip()
         expires = expires if re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires) else None
         max_uses = int(form["max_uses"]) if form.get("max_uses", "").isdigit() and int(form["max_uses"]) > 0 else None
-        vals = (code, offer, discount or None, expires, max_uses, 1 if form.get("active") else 0)
+        types = "|".join(t for i, t in enumerate(SESSION_TYPES) if form.get(f"t_{i}"))
+        vals = (code, offer, discount or None, expires, max_uses, 1 if form.get("active") else 0, types or None)
         with DB_LOCK, db() as c:
             if c.execute("SELECT 1 FROM promo_codes WHERE code=? AND id IS NOT ?", (code, pid)).fetchone():
                 return self.redirect(back + ("&" if pid else "?") + "done=promo-taken#promo")
             if pid:
-                c.execute("UPDATE promo_codes SET code=?, offer=?, discount=?, expires=?, max_uses=?, active=? WHERE id=?",
-                          (*vals, pid))
+                c.execute("UPDATE promo_codes SET code=?, offer=?, discount=?, expires=?, max_uses=?, active=?, "
+                          "session_types=? WHERE id=?", (*vals, pid))
             else:
-                c.execute("INSERT INTO promo_codes (code, offer, discount, expires, max_uses, active, created) "
-                          "VALUES (?,?,?,?,?,?,?)", (*vals, time.strftime("%Y-%m-%d %H:%M")))
+                c.execute("INSERT INTO promo_codes (code, offer, discount, expires, max_uses, active, session_types, created) "
+                          "VALUES (?,?,?,?,?,?,?,?)", (*vals, time.strftime("%Y-%m-%d %H:%M")))
         self.redirect("/admin/pricing?done=promo-saved")
 
     # ---- admin: locations

@@ -138,8 +138,8 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
 - **Prices & promos:** prices are not shown on the website. Set a default price
   per session type; a session's price starts from it and goes into emails as
   `{price}` (and `{balance}`, less any deposit paid and promo discount). Create
-  promo codes with what they offer, an optional discount ($ or %), expiry date
-  and use limit. The Book page checks a code before the form can be sent, and
+  promo codes with what they offer, an optional discount ($ or %), expiry date,
+  use limit and the session types it works for. The Book page checks a code before the form can be sent, and
   sessions that used one show a **Promo** tag.
 - **Locations:** add, edit, hide, reorder and delete location pages. Each has
   its own page at `/locations/<name>` with a photo (cropped in the browser), a

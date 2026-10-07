@@ -88,14 +88,17 @@
 
     // Promo codes are checked as soon as they're entered, and again before sending
     var promo = form.querySelector("input[name=promo]"), promoMsg = form.querySelector(".promo-status");
-    var checked = { code: "", ok: true };
+    var checked = { code: "", ok: true }, kind = form.querySelector("select[name=session_type]");
+    function promoKey() { return promo.value.trim().toUpperCase() + "|" + (kind ? kind.value : ""); }
     function checkPromo() {
       var code = promo ? promo.value.trim() : "";
       if (!code) { checked = { code: "", ok: true }; promoMsg.textContent = ""; promoMsg.className = "promo-status"; return Promise.resolve(true); }
-      if (checked.code === code.toUpperCase()) return Promise.resolve(checked.ok);
+      if (checked.code === promoKey()) return Promise.resolve(checked.ok);
       promoMsg.textContent = "Checking…"; promoMsg.className = "promo-status";
-      return fetch("/api/promo?code=" + encodeURIComponent(code)).then(function (r) { return r.json(); }).then(function (d) {
-        checked = { code: code.toUpperCase(), ok: !!d.ok };
+      var key = promoKey();
+      return fetch("/api/promo?code=" + encodeURIComponent(code) + "&session=" + encodeURIComponent(kind ? kind.value : ""))
+        .then(function (r) { return r.json(); }).then(function (d) {
+        checked = { code: key, ok: !!d.ok };
         promoMsg.textContent = d.ok ? "\u2713 " + d.offer : d.error;
         promoMsg.className = "promo-status " + (d.ok ? "ok" : "bad");
         return checked.ok;
@@ -105,13 +108,14 @@
       if (params.get("promo")) promo.value = params.get("promo");
       promo.addEventListener("change", checkPromo);
       form.querySelector("[data-promo-check]").addEventListener("click", checkPromo);
-      promo.addEventListener("input", function () { if (checked.code !== promo.value.trim().toUpperCase()) { promoMsg.textContent = ""; promoMsg.className = "promo-status"; } });
+      if (kind) kind.addEventListener("change", function () { if (promo.value.trim()) checkPromo(); });
+      promo.addEventListener("input", function () { if (checked.code !== promoKey()) { promoMsg.textContent = ""; promoMsg.className = "promo-status"; } });
       if (promo.value) checkPromo();
     }
 
     form.addEventListener("submit", function (e) {
       e.preventDefault();
-      if (promo && promo.value.trim() && checked.code !== promo.value.trim().toUpperCase()) {
+      if (promo && promo.value.trim() && checked.code !== promoKey()) {
         return checkPromo().then(function (ok) { if (ok) form.requestSubmit ? form.requestSubmit() : send(); else promo.focus(); });
       }
       if (promo && promo.value.trim() && !checked.ok) { promo.focus(); return; }
