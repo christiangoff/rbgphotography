@@ -93,8 +93,7 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "prices-saved": "Session prices saved.", "promo-saved": "Promo code saved.",
            "promo-deleted": "Promo code deleted.", "promo-invalid": "Please enter a code (letters and numbers) and what it offers.",
            "promo-taken": "That promo code already exists.",
-           "featured": "Added to the home page.", "unfeatured": "Taken off the home page.",
-           "feature-failed": "That photo couldn't be copied to the home page. Is Pillow installed?"}
+           "featured": "Added to the home page.", "unfeatured": "Taken off the home page."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner", "og-image.jpg": "Preview when the site is shared",
     "about-rachel.jpg": "Rachel's portrait",
@@ -286,9 +285,6 @@ with db() as _c:
                           spots, tips, map, photo, seo_title, seo_description, sort)
                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        [(time.strftime("%Y-%m-%d %H:%M"), *row, n) for n, row in enumerate(SEED_LOCATIONS)])
-    _c.execute("""CREATE TABLE IF NOT EXISTS featured_photos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, gallery TEXT NOT NULL, name TEXT NOT NULL,
-        file TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, UNIQUE (gallery, name))""")
     _c.execute("""CREATE TABLE IF NOT EXISTS session_prices (session_type TEXT PRIMARY KEY, price TEXT)""")
     _c.execute("""CREATE TABLE IF NOT EXISTS promo_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, code TEXT UNIQUE NOT NULL,
@@ -646,44 +642,21 @@ def portfolio_photos():
     return sorted(p.name for p in PHOTOS.glob("portfolio-*") if p.suffix.lower() in IMAGE_EXT)
 
 
-FEATURED = PHOTOS / "featured"
+FEATURED_FILE = DATA / "featured.json"
 
 
-def featured_photos():
-    with db() as c:
-        return [r for r in c.execute("SELECT * FROM featured_photos ORDER BY sort, id") if (FEATURED / r["file"]).is_file()]
-
-
-def feature_photo(g, name):
-    """Copy a gallery photo to the public site (resized, camera data removed) and list it on the home page."""
-    src = g["folder"] / name
-    if not HAVE_PIL or not src.is_file():
-        return False
-    FEATURED.mkdir(exist_ok=True)
-    file = f"{g['slug']}--{Path(name).stem}.jpg"
+def featured_stems():
+    """Portfolio photos picked for the home page, by name without extension (e.g. portfolio-03)."""
     try:
-        with Image.open(src) as im:
-            im = ImageOps.exif_transpose(im).convert("RGB")
-            im.thumbnail((1600, 1600), Image.LANCZOS)
-            im.save(FEATURED / file, "JPEG", quality=82, optimize=True, progressive=True)
-    except Exception as exc:
-        print(f"featuring {name} failed: {exc}", file=sys.stderr)
-        return False
-    with DB_LOCK, db() as c:
-        top = c.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM featured_photos").fetchone()[0]
-        c.execute("INSERT OR IGNORE INTO featured_photos (created, gallery, name, file, sort) VALUES (?,?,?,?,?)",
-                  (time.strftime("%Y-%m-%d %H:%M"), g["slug"], name, file, top))
-    return True
+        return set(json.loads(FEATURED_FILE.read_text()))
+    except (OSError, ValueError):
+        return set()
 
 
-def unfeature_photo(slug, name=None):
-    """Take one gallery photo (or a whole gallery's, when name is None) off the home page."""
-    with DB_LOCK, db() as c:
-        rows = c.execute("SELECT * FROM featured_photos WHERE gallery=?" + ("" if name is None else " AND name=?"),
-                         (slug,) if name is None else (slug, name)).fetchall()
-        for r in rows:
-            (FEATURED / r["file"]).unlink(missing_ok=True)
-            c.execute("DELETE FROM featured_photos WHERE id=?", (r["id"],))
+def save_featured(stems):
+    tmp = FEATURED_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(stems)))
+    tmp.replace(FEATURED_FILE)
 
 
 def portfolio_values():
@@ -691,13 +664,10 @@ def portfolio_values():
     grid = "\n".join(
         f'<a class="lb" href="/static/img/photos/{n}"><img src="/static/img/photos/{n}" '
         f'alt="Family photo by {esc(CFG["business"]["name"])}" loading="lazy"></a>' for n in names)
-    featured = featured_photos()
-    if featured:  # photos picked from client galleries in the admin
-        strip = "\n".join(f'<img src="/static/img/photos/featured/{quote(r["file"])}" alt="Family photo by '
-                          f'{esc(CFG["business"]["name"])}" loading="lazy">' for r in featured)
-    else:
-        strip = "\n".join(
-            f'<img src="/static/img/photos/{n}" alt="Recent family session" loading="lazy">' for n in names[:4])
+    stems = featured_stems()
+    featured = [n for n in names if Path(n).stem in stems] or names[:4]  # the first four until some are picked
+    strip = "\n".join(
+        f'<img src="/static/img/photos/{n}" alt="Recent family session" loading="lazy">' for n in featured)
     return {"portfolio_grid": grid, "portfolio_strip": strip}
 
 
@@ -1679,22 +1649,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/admin/clients?done=client-deleted")
         if p == "/admin/galleries/save":
             return self.admin_gallery_save(form)
-        m = re.fullmatch(r"/admin/galleries/([a-z0-9-]+)/feature", p)
-        if m:
-            g = read_gallery(m.group(1))
-            name = form.get("name", "")
-            if not g or name not in g["photos"]:
-                return self.not_found()
-            if form.get("on"):
-                done = "featured" if feature_photo(g, name) else "feature-failed"
-            else:
-                unfeature_photo(g["slug"], name)
-                done = "unfeatured"
-            if form.get("back") == "photos":
-                return self.redirect(f"/admin/photos?done={done}")
-            return self.redirect(f"/admin/galleries/{g['slug']}?done={done}")
-        if p == "/admin/featured/move":
-            return self.admin_featured_move(form)
         m = re.fullmatch(r"/admin/galleries/([a-z0-9-]+)/(delete|photo-delete)", p)
         if m:
             return self.admin_gallery_delete(m.group(1), form.get("name") if m.group(2) == "photo-delete" else None)
@@ -1704,6 +1658,14 @@ class Handler(BaseHTTPRequestHandler):
             saved = sum(optimize_photo(f, photo_max_side(f.name)) for f in sorted(PHOTOS.iterdir())
                         if f.is_file() and f.suffix.lower() in IMAGE_EXT)
             return self.redirect(f"/admin/photos?done=photos-optimized&saved={saved // 1024}")
+        if p == "/admin/photos/feature":
+            name = form.get("name", "")
+            if name in portfolio_photos():
+                with DB_LOCK:
+                    stems = featured_stems()
+                    (stems.add if form.get("on") else stems.discard)(Path(name).stem)
+                    save_featured(stems)
+            return self.redirect("/admin/photos?done=" + ("featured" if form.get("on") else "unfeatured"))
         if p == "/admin/photos/focus":
             return self.admin_photo_focus(form)
         if p == "/admin/photos/move":
@@ -2424,15 +2386,10 @@ class Handler(BaseHTTPRequestHandler):
                     row = c.execute("SELECT email FROM clients WHERE id=?", (g["client_id"],)).fetchone()
                     client_email = row["email"] if row else ""
             mailto = (f"mailto:{quote(client_email)}?subject={quote('Your photos are ready!')}&amp;body={quote(share)}")
-            starred = {r["name"] for r in featured_photos() if r["gallery"] == g["slug"]}
             photos = "".join(f"""
-    <figure class="admin-thumb{' featured' if n in starred else ''}">
+    <figure class="admin-thumb">
       <img src="/admin/galleries/{g['slug']}/thumb/{quote(n)}" alt="" loading="lazy">
       <figcaption><span>{esc(n)}</span>
-        <form method="post" action="/admin/galleries/{g['slug']}/feature" data-autosubmit>
-          <input type="hidden" name="name" value="{esc(n)}">
-          <label class="toggle small"><input type="checkbox" name="on" value="1"{' checked' if n in starred else ''}> Featured on home page</label>
-          <noscript><button class="link-btn">Save</button></noscript></form>
         <form method="post" action="/admin/galleries/{g['slug']}/photo-delete" data-confirm="Remove {esc(n)} from this gallery?">
           <input type="hidden" name="name" value="{esc(n)}"><button class="link-btn" aria-label="Remove {esc(n)}">Remove</button></form>
       </figcaption>
@@ -2511,7 +2468,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.not_found()
         trash = DATA / "trash" / time.strftime("%Y%m%d-%H%M%S")
         trash.mkdir(parents=True, exist_ok=True)
-        unfeature_photo(slug, photo)
         if photo is None:
             g["folder"].rename(trash / slug)
             return self.redirect("/admin/galleries?done=gallery-deleted")
@@ -2915,6 +2871,8 @@ class Handler(BaseHTTPRequestHandler):
 
         focus = photo_focus()
 
+        stems = featured_stems()
+
         def card(name, portfolio=False, first=False, last=False):
             f = PHOTOS / name
             kb = f.stat().st_size / 1024
@@ -2937,8 +2895,12 @@ class Handler(BaseHTTPRequestHandler):
                     for d, lab, dis in (("up", "◀ Earlier", first), ("down", "Later ▶", last)))
                 move += (f'<form method="post" action="/admin/photos/delete" data-confirm="Remove {esc(name)} from the portfolio?">'
                          f'<input type="hidden" name="name" value="{esc(name)}"><button class="link-btn">Remove</button></form>')
+                move += (f'<form method="post" action="/admin/photos/feature" data-autosubmit class="feature-form">'
+                         f'<input type="hidden" name="name" value="{esc(name)}"><label class="toggle small">'
+                         f'<input type="checkbox" name="on" value="1"{" checked" if Path(name).stem in stems else ""}> '
+                         f'Featured on home page</label><noscript><button class="link-btn">Save</button></noscript></form>')
             return f"""
-    <figure class="admin-thumb photo-card">
+    <figure class="admin-thumb photo-card{' featured' if portfolio and Path(name).stem in stems else ''}">
       <img src="/static/img/photos/{esc(name)}?v={int(f.stat().st_mtime)}" alt="" loading="lazy">
       <figcaption>
         <strong>{esc(name)}</strong>
@@ -2956,21 +2918,6 @@ class Handler(BaseHTTPRequestHandler):
         port = portfolio_photos()
         site = sorted(p.name for p in PHOTOS.iterdir()
                       if p.is_file() and p.suffix.lower() in IMAGE_EXT and p.name not in port)
-        featured = featured_photos()
-        feat = "".join(f"""
-    <figure class="admin-thumb photo-card">
-      <img src="/static/img/photos/featured/{quote(r['file'])}" alt="" loading="lazy">
-      <figcaption><strong>{esc(r['name'])}</strong>
-        <span class="muted small">From <a href="/admin/galleries/{esc(r['gallery'])}">{esc(r['gallery'])}</a></span>
-        <div class="row-actions">
-          {''.join(f'<form method="post" action="/admin/featured/move"><input type="hidden" name="id" value="{r["id"]}">'
-                   f'<input type="hidden" name="dir" value="{d}"><button class="link-btn"{" disabled" if dis else ""}>{lab}</button></form>'
-                   for d, lab, dis in (("up", "◀ Earlier", i == 0), ("down", "Later ▶", i == len(featured) - 1)))}
-          <form method="post" action="/admin/galleries/{esc(r['gallery'])}/feature"><input type="hidden" name="name" value="{esc(r['name'])}">
-            <input type="hidden" name="back" value="photos"><button class="link-btn">Remove</button></form>
-        </div>
-      </figcaption>
-    </figure>""" for i, r in enumerate(featured))
         big = [n for n in port + site if (PHOTOS / n).stat().st_size > 600 * 1024]
         if not HAVE_PIL:
             opt = ('<p class="notice warn">Install Pillow on the Pi (<code>sudo apt install -y python3-pil</code>, then '
@@ -2988,18 +2935,14 @@ class Handler(BaseHTTPRequestHandler):
      Screens of different sizes trim the edges of wide photos, so use <strong>Focus point</strong> to pick the part
      that should always stay in view (a face, say). Changes show up right away.</p>
   <h2>Portfolio <span class="muted">({len(port)})</span></h2>
-  <p class="muted">These appear on the Portfolio page in this order. Until you feature gallery photos (below), the
-     first four also show on the home page.</p>
+  <p class="muted">These appear on the Portfolio page in this order. Tick <strong>Featured on home page</strong> to show a
+     photo in the home page's “A few favorite moments” strip (four across on computers; pick four or eight to fill the rows).
+     Until you pick some, the home page shows the first four.</p>
   <div class="dropzone" data-upload="/admin/upload?kind=portfolio" data-resize="2000">
     <p><strong>Add portfolio photos</strong>: drag them here or <label class="link-btn">choose files<input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></p>
     <div class="progress" aria-live="polite"></div>
   </div>
   <div class="admin-grid">{''.join(card(n, True, i == 0, i == len(port) - 1) for i, n in enumerate(port))}</div>
-  <h2 class="mt-xl" id="featured">Featured on the home page <span class="muted">({len(featured)})</span></h2>
-  <p class="muted">Pick these from a client gallery: open it under <a href="/admin/galleries">Galleries</a> and tick
-     <strong>Featured on home page</strong> under a photo. They show in the “A few favorite moments” strip, four
-     across on computers. Please check the family is happy for their photos to be shared.</p>
-  <div class="admin-grid">{feat or '<p class="muted">None yet, so the home page shows the first four portfolio photos.</p>'}</div>
   <h2 class="mt-xl">Page photos</h2>
   <div class="admin-grid">{''.join(card(n) for n in site)}</div>"""
         self.admin_page(body, "Site photos", "photos", notice)
@@ -3009,6 +2952,11 @@ class Handler(BaseHTTPRequestHandler):
             trash = DATA / "trash" / time.strftime("%Y%m%d-%H%M%S")
             trash.mkdir(parents=True, exist_ok=True)
             (PHOTOS / name).rename(trash / name)
+            with DB_LOCK:
+                stems = featured_stems()
+                if Path(name).stem in stems:
+                    stems.discard(Path(name).stem)
+                    save_featured(stems)
         self.redirect("/admin/photos?done=photo-removed")
 
     def admin_photo_focus(self, form):
@@ -3030,18 +2978,6 @@ class Handler(BaseHTTPRequestHandler):
             save_photo_focus(focus)
         self.send(200, json.dumps({"ok": True}), "application/json")
 
-    def admin_featured_move(self, form):
-        with DB_LOCK, db() as c:
-            ids = [r["id"] for r in c.execute("SELECT id FROM featured_photos ORDER BY sort, id")]
-            fid = int(form["id"]) if form.get("id", "").isdigit() else None
-            if fid in ids and form.get("dir") in ("up", "down"):
-                i = ids.index(fid)
-                j = i - 1 if form["dir"] == "up" else i + 1
-                if 0 <= j < len(ids):
-                    ids[i], ids[j] = ids[j], ids[i]
-                c.executemany("UPDATE featured_photos SET sort=? WHERE id=?", [(n, x) for n, x in enumerate(ids)])
-        self.redirect("/admin/photos#featured")
-
     def admin_photo_move(self, name, direction):
         names = portfolio_photos()
         if name in names and direction in ("up", "down"):
@@ -3053,6 +2989,11 @@ class Handler(BaseHTTPRequestHandler):
                 a.rename(tmp)
                 b.rename(PHOTOS / (Path(names[i]).stem + b.suffix))
                 tmp.rename(PHOTOS / (Path(names[j]).stem + a.suffix))
+                with DB_LOCK:  # the "featured" tick moves with the photo
+                    stems, si, sj = featured_stems(), Path(names[i]).stem, Path(names[j]).stem
+                    if (si in stems) != (sj in stems):
+                        stems ^= {si, sj}
+                        save_featured(stems)
         self.redirect("/admin/photos")
 
     # ---- admin: uploads (one file per request, streamed to disk)

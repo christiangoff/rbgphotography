@@ -128,7 +128,9 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   portfolio), stripped of camera data including GPS, and compressed on upload;
   an **Optimize photos** button fixes ones uploaded earlier. Gallery uploads are
   left untouched. Add, remove and
-  reorder portfolio photos; the first four also appear on the home page.
+  reorder portfolio photos. Tick **Featured on home page** on portfolio photos to
+  pick the ones in the home page strip (saved in `data/featured.json`); until
+  some are picked it shows the first four.
 - **Watermarks:** while a gallery's session isn't marked **Paid in full**, the
   client sees watermarked previews (a repeating logo, max 2000 px) and downloads
   are switched off. Marking the session paid in full removes the watermark right
@@ -141,11 +143,6 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   promo codes with what they offer, an optional discount ($ or %), expiry date,
   use limit and the session types it works for. The Book page checks a code before the form can be sent, and
   sessions that used one show a **Promo** tag.
-- **Featured photos:** tick **Featured on home page** under any photo in a client
-  gallery to show it in the home page's "A few favorite moments" strip. A
-  resized copy without camera data goes in `static/img/photos/featured/`;
-  reorder or remove them on **Site photos**. With none featured, the strip shows
-  the first four portfolio photos.
 - **Locations:** add, edit, hide, reorder and delete location pages. Each has
   its own page at `/locations/<name>` with a photo (cropped in the browser), a
   Google Map of the address you enter, favorite spots and tips. Cards appear on
