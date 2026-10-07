@@ -1,3 +1,4 @@
 config.ini
 data/
 __pycache__/
+static/img/photos/featured/

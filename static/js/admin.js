@@ -263,3 +263,8 @@ document.querySelectorAll("[data-focus]").forEach(function (b) {
     photoTool.focus(b.dataset.src, b.dataset.xy.split(",").map(Number), b.dataset.focus, function () { location.reload(); });
   });
 });
+
+// Checkboxes that save as soon as they're ticked
+document.querySelectorAll("form[data-autosubmit] input[type=checkbox]").forEach(function (box) {
+  box.addEventListener("change", function () { box.form.submit(); });
+});

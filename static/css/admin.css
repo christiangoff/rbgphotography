@@ -77,3 +77,5 @@ label.toggle input { width: auto; margin: 0; }
 .promo-types legend { font: 500 .75rem/1.4 var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--forest); padding: 0; margin-bottom: .4rem; }
 .promo-types legend .opt { color: var(--sage); letter-spacing: .05em; text-transform: none; font-weight: 300; }
 .promo-types label.toggle { padding-bottom: 0; }
+.admin-thumb.featured { outline: 3px solid var(--terracotta); outline-offset: -3px; }
+label.toggle.small { font-size: .85rem; padding: 0; align-self: auto; }
