@@ -581,7 +581,6 @@ def render(body, title, description="", path="/", extra_head="", noindex=False):
         values.update(portfolio_values())
     if "{{location_cards" in body:
         values["location_cards"] = location_cards()
-        values["location_cards_home"] = location_cards(3)
     if "{{testimonials}}" in body:
         values["testimonials"] = testimonials_html()
         if not values["testimonials"]:  # no reviews to show: drop the whole section
