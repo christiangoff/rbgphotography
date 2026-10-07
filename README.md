@@ -125,6 +125,11 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   stays in view when phones and wide screens trim the edges (saved in
   `data/photo_focus.json`). Add, remove and
   reorder portfolio photos; the first four also appear on the home page.
+- **Locations:** add, edit, hide, reorder and delete location pages. Each has
+  its own page at `/locations/<name>` with a photo (cropped in the browser), a
+  Google Map of the address you enter, favorite spots and tips. Cards appear on
+  the Locations page, and the first three on the home page. Stored in the
+  `locations` table; the three original pages are added there on first run.
 - **Site text:** edit the words on every public page (headings, paragraphs,
   prices, list items, and each page's Google title and description), plus the
   home page **Testimonials** (add, edit, hide, reorder, delete). Saved text is

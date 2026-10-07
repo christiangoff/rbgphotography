@@ -83,6 +83,8 @@
       var sel = form.querySelector("select[name=session_type]");
       Array.prototype.forEach.call(sel.options, function (o) { if (o.value === preset) sel.value = preset; });
     }
+    var place = params.get("location"), where = form.querySelector("input[name=location]");
+    if (place && where && !where.value) where.value = place;
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var btn = form.querySelector("button[type=submit]");

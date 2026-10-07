@@ -72,3 +72,4 @@ label.toggle input { width: auto; margin: 0; }
 .photo-tool.focus-mode .pt-frame { display: none; }
 .photo-tool.focus-mode .pt-dot { display: block; }
 .photo-tool.focus-mode .pt-stage { cursor: crosshair; }
+.loc-photo img { display: block; width: 100%; max-width: 520px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: var(--radius); margin-bottom: .8rem; }

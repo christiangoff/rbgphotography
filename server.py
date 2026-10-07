@@ -60,7 +60,8 @@ ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("sessions", "/admin/ses
                   ("minis", "/admin/minis", "Mini sessions"), ("clients", "/admin/clients", "Clients"),
                   ("galleries", "/admin/galleries", "Galleries"),
                   ("emails", "/admin/emails", "Emails"),
-                  ("photos", "/admin/photos", "Site photos"), ("content", "/admin/content", "Site text")]
+                  ("photos", "/admin/photos", "Site photos"), ("content", "/admin/content", "Site text"),
+                  ("locations", "/admin/locations", "Locations")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -71,6 +72,7 @@ ADMIN_ICONS = {
     "photos": '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
     "emails": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3.5 6l8.5 7 8.5-7"/>',
     "content": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
+    "locations": '<path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.4"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
@@ -83,7 +85,10 @@ NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "test-failed": "The test email didn't go through. Check the [email] settings in config.ini.",
            "text-saved": "Saved. The page shows the new text now.",
            "review-saved": "Testimonial saved.", "review-added": "Testimonial added.",
-           "review-deleted": "Testimonial deleted."}
+           "review-deleted": "Testimonial deleted.", "location-saved": "Location saved.",
+           "location-deleted": "Location deleted. Its photo is in the trash folder.",
+           "location-invalid": "Please give the location a name.",
+           "slug-taken": "Another location already uses that web address. Pick a different one."}
 PHOTO_HINTS = {
     "hero.jpg": "Home page banner", "og-image.jpg": "Preview when the site is shared",
     "about-rachel.jpg": "Rachel's portrait",
@@ -171,6 +176,47 @@ SECRET = secret_key()
 
 # --------------------------------------------------------------------------- storage
 
+SEED_LOCATIONS = [
+    ("patapsco-valley", "Patapsco Valley State Park", "Patapsco Valley State Park",
+     "Family photos in *Patapsco Valley*",
+     "Forest trails, the river, and the Swinging Bridge. The classic local favorite for every season.",
+     "Patapsco Valley State Park winds along the Patapsco River right through our corner of Maryland, and it's one of my favorite places to photograph families.",
+     "Tall trees filter the light, the river adds movement and sparkle, and there's room for kids to run, explore and be themselves. It looks different every season: fresh green in spring, deep shade in summer, glowing color in fall, and quiet, cozy tones in winter.",
+     "Spots I love in the park",
+     "**The Swinging Bridge** in the Orange Grove area, a favorite for playful, adventurous photos.\n"
+     "**River banks and rock outcrops** for skipping-stones moments and wide, airy portraits.\n"
+     "**Wooded trails** with soft, even light, perfect for little ones and newborn-and-family walks.\n"
+     "**Historic stone landmarks** nearby, like the Thomas Viaduct, for a timeless backdrop.",
+     "The park is large, with several entrances. I'll send you the exact meeting spot and parking details once we pick a date. Some park areas charge a small day-use fee, and trails can be muddy after rain, so comfortable shoes are a good idea.\n\n"
+     "Golden hour, the hour or so before sunset, gives the warmest light under the trees. Morning sessions are lovely in summer when it's cooler and quieter.",
+     "Swinging Bridge, Patapsco Valley State Park, Ellicott City, MD", "location-patapsco.jpg",
+     "Family Photos at Patapsco Valley State Park",
+     "Family photography at Patapsco Valley State Park near Ellicott City and Woodstock, MD. Wooded trails, river views and the Swinging Bridge with photographer Rachel Goff."),
+    ("ellicott-city", "Historic Ellicott City", "Ellicott City, MD", "Ellicott City *family photographer*",
+     "Granite buildings, brick steps and colorful storefronts with a timeless feel.",
+     "Historic Ellicott City has a storybook quality that families love: granite buildings, brick steps, painted shopfronts and old stone walls with a river running beside it.",
+     "It's a wonderful setting if you want photos with a little more character and texture, and it pairs beautifully with a stop for ice cream or coffee afterward to make an outing of it.",
+     "Spots I love in and around Ellicott City",
+     "**Historic Main Street** and its side alleys and stone staircases.\n"
+     "**The B&O Railroad Museum: Ellicott City Station** area, with its historic stone station building.\n"
+     "**Patapsco Female Institute Historic Park**, romantic stone ruins on the hill above town.\n"
+     "**Centennial Park** for open lawns, a lake path and easy parking.",
+     "Main Street is busiest on weekend afternoons, so I usually suggest an early morning or a weekday evening session for a calmer feel. Parking is available in public lots around town; I'll send the closest one to our meeting spot.",
+     "Main Street, Ellicott City, MD", "location-ellicott-city.jpg", "Ellicott City Family Photographer",
+     "Ellicott City family photographer Rachel Goff. Relaxed family photos on historic Main Street, at the Patapsco Female Institute ruins and in nearby parks."),
+    ("sykesville", "Sykesville", "Sykesville, MD", "Family photos in *Sykesville*",
+     "Small-town Main Street charm, plus open fields and lakeside paths nearby.",
+     "Just across the river in Carroll County, Sykesville has the kind of small-town Main Street that makes family photos feel warm and nostalgic.",
+     "It's an easy drive from Woodstock, Eldersburg and Marriottsville, and has a mix of brick storefronts, railroad history and green space close by.",
+     "Spots I love in and around Sykesville",
+     "**Historic Main Street** with its brick buildings and the old railroad station by the river.\n"
+     "**Piney Run Park** for lake views, open fields and wooded paths.\n"
+     "**Your own backyard**: many Carroll County families have beautiful space right at home.",
+     "Main Street is a great choice for fall and holiday sessions when the storefronts are decorated. Piney Run is ideal for spring and summer evenings. Some parks have entry fees in season; I'll let you know what to expect when we plan.",
+     "Main Street, Sykesville, MD", "location-sykesville.jpg", "Sykesville Family Photographer",
+     "Sykesville and Eldersburg family photographer Rachel Goff. Small-town Main Street photos and lakeside sessions at Piney Run Park in Carroll County, MD."),
+]
+
 DB_PATH = DATA / "inquiries.db"
 DB_LOCK = threading.Lock()
 
@@ -223,6 +269,17 @@ with db() as _c:
                 "Sample review: Rachel had our toddler giggling within minutes. These are the first family photos where we all look like ourselves.",
                 "Sample review: The session felt like a walk in the park with a friend, and the gallery made my mom cry happy tears.",
                 "Sample review: Easy to book, so patient with our kids, and the photos were ready sooner than we expected."])])
+    _new_locations = not _c.execute("SELECT 1 FROM sqlite_master WHERE name='locations'").fetchone()
+    _c.execute("""CREATE TABLE IF NOT EXISTS locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL, area TEXT, heading TEXT, summary TEXT, intro TEXT, body TEXT,
+        spots_title TEXT, spots TEXT, tips TEXT, map TEXT, photo TEXT,
+        seo_title TEXT, seo_description TEXT, sort INTEGER NOT NULL DEFAULT 0, shown INTEGER NOT NULL DEFAULT 1)""")
+    if _new_locations:  # start with the three location pages the site shipped with
+        _c.executemany("""INSERT INTO locations (created, slug, name, area, heading, summary, intro, body, spots_title,
+                          spots, tips, map, photo, seo_title, seo_description, sort)
+                          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       [(time.strftime("%Y-%m-%d %H:%M"), *row, n) for n, row in enumerate(SEED_LOCATIONS)])
     # one live booking per slot, enforced by the database itself
     _c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_booking_per_slot
                   ON mini_bookings(event_id, slot) WHERE status='booked'""")
@@ -308,6 +365,83 @@ def read_page(path):
         text = EDITABLE.sub(lambda m: (m.group(0) if m.group(3) not in saved else
                                        f"<{m.group(1)}{m.group(2)}>{text_to_html(saved[m.group(3)])}</{m.group(1)}>"), text)
     return meta, text
+
+
+def locations(shown_only=True):
+    with db() as c:
+        return c.execute("SELECT * FROM locations" + (" WHERE shown=1" if shown_only else "")
+                         + " ORDER BY sort, id").fetchall()
+
+
+def location_by_slug(slug):
+    with db() as c:
+        return c.execute("SELECT * FROM locations WHERE slug=?", (slug,)).fetchone()
+
+
+def paragraphs(text, first_class=""):
+    paras = [p.strip() for p in re.split(r"\n\s*\n", (text or "").replace("\r\n", "\n")) if p.strip()]
+    return "\n".join(f'<p{first_class if i == 0 else ""}>{text_to_html(p)}</p>' for i, p in enumerate(paras))
+
+
+def location_cards(limit=None):
+    out = []
+    for r in locations()[:limit]:
+        img = (f'<img src="/static/img/photos/{esc(r["photo"])}" alt="{esc(r["name"])}" width="1600" height="1000" loading="lazy">'
+               if r["photo"] and (PHOTOS / r["photo"]).is_file() else "")
+        out.append(f'      <a class="card" href="/locations/{esc(r["slug"])}">\n        {img}\n'
+                   f'        <div class="card-body"><h3>{esc(r["name"])}</h3><p>{text_to_html(r["summary"] or "")}</p></div>\n      </a>')
+    return "\n".join(out)
+
+
+def map_embed_url(query):
+    return "https://www.google.com/maps?output=embed&z=13&q=" + quote(query)
+
+
+def location_page_body(r):
+    photo = (f'<img src="/static/img/photos/{esc(r["photo"])}" alt="{esc(r["name"])}" width="1600" height="1000">'
+             if r["photo"] and (PHOTOS / r["photo"]).is_file() else "")
+    spots = [ln.strip().lstrip("-•* ").strip() if not ln.strip().startswith("**") else ln.strip()
+             for ln in (r["spots"] or "").splitlines() if ln.strip()]
+    spots_html = (f'<h2>{text_to_html(r["spots_title"] or "Spots I love")}</h2>\n      <ul>'
+                  + "".join(f"<li>{text_to_html(x)}</li>" for x in spots) + "</ul>") if spots else ""
+    tips = f'<h2>Good to know</h2>\n      {paragraphs(r["tips"])}' if (r["tips"] or "").strip() else ""
+    themap = ""
+    if (r["map"] or "").strip():
+        q = r["map"].strip()
+        themap = f"""
+<section class="section cream">
+  <div class="wrap">
+    <div class="section-head"><p class="eyebrow">Map</p><h2>Finding {esc(r["name"])}</h2></div>
+    <div class="map-embed"><iframe src="{esc(map_embed_url(q))}" title="Map of {esc(r["name"])}" loading="lazy"
+         referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe></div>
+    <p class="actions"><a class="btn ghost" href="https://www.google.com/maps/search/?api=1&amp;query={esc(quote(q))}"
+       target="_blank" rel="noopener">Open in Google Maps</a></p>
+  </div>
+</section>"""
+    return f"""<section class="page-hero vf">
+  {photo}
+  <div class="wrap">
+    <p class="eyebrow">{esc(r["area"] or r["name"])}</p>
+    <h1>{text_to_html(r["heading"] or r["name"])}</h1>
+  </div>
+</section>
+<section class="section">
+  <div class="wrap two-col">
+    <div class="prose">
+      {paragraphs(r["intro"], ' class="lede"')}
+      {paragraphs(r["body"])}
+      {spots_html}
+      {tips}
+    </div>
+    <aside class="aside-box">
+      <h3>Book a session here</h3>
+      <p>Tell me your dates and I'll suggest the best time of day for light at this location.</p>
+      <a class="btn" href="/book?location={esc(quote(r["name"]))}">Check availability</a>
+      <p class="muted mt">More spots: <a href="/locations">all locations</a></p>
+    </aside>
+  </div>
+</section>{themap}
+"""
 
 
 def content_pages():
@@ -433,6 +567,9 @@ def render(body, title, description="", path="/", extra_head="", noindex=False):
     })
     if "{{portfolio_" in body:
         values.update(portfolio_values())
+    if "{{location_cards" in body:
+        values["location_cards"] = location_cards()
+        values["location_cards_home"] = location_cards(3)
     if "{{testimonials}}" in body:
         values["testimonials"] = testimonials_html()
         if not values["testimonials"]:  # no reviews to show: drop the whole section
@@ -911,6 +1048,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; "
                          "script-src 'self'; font-src 'self'; form-action 'self'; "
+                         "frame-src https://www.google.com https://maps.google.com; "
                          "frame-ancestors 'none'; base-uri 'self'")
 
     def send(self, status, body=b"", ctype="text/html; charset=utf-8", headers=None):
@@ -1065,6 +1203,11 @@ class Handler(BaseHTTPRequestHandler):
         name = "index" if p == "/" else p.strip("/")
         if not re.fullmatch(r"[a-z0-9-]+(/[a-z0-9-]+)?", name) or name == "404":
             return self.not_found()
+        if name.startswith("locations/"):
+            loc = location_by_slug(name.split("/", 1)[1])
+            if loc and loc["shown"]:
+                return self.page(location_page_body(loc), loc["seo_title"] or loc["name"],
+                                 loc["seo_description"] or loc["summary"] or "")
         f = PAGES / f"{name}.html"
         if not f.is_file():
             f = PAGES / name / "index.html"
@@ -1092,6 +1235,8 @@ class Handler(BaseHTTPRequestHandler):
             path = "/" if rel == "index" else "/" + rel
             mod = time.strftime("%Y-%m-%d", time.gmtime(f.stat().st_mtime))
             locs.append(f"<url><loc>{esc(url + path)}</loc><lastmod>{mod}</lastmod></url>")
+        for r in locations():
+            locs.append(f"<url><loc>{esc(url)}/locations/{esc(r['slug'])}</loc></url>")
         locs.append(f"<url><loc>{esc(url)}/minis</loc></url>")
         body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -1251,6 +1396,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_mini_form(int(m.group(1)), notice)
         if p == "/admin/emails":
             return self.admin_emails(q.get("edit", ""), notice)
+        if p == "/admin/locations":
+            return self.admin_locations(notice)
+        if p == "/admin/locations/new":
+            return self.admin_location_form(None, notice)
+        m = re.fullmatch(r"/admin/locations/(\d+)", p)
+        if m:
+            return self.admin_location_form(int(m.group(1)), notice)
         if p == "/admin/content":
             return self.admin_content(q.get("page", "index"), notice)
         if p == "/admin/email":
@@ -1307,6 +1459,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_email_send(form)
         if p == "/admin/emails/template":
             return self.admin_template_save(form)
+        if p == "/admin/locations/save":
+            return self.admin_location_save(form)
+        m = re.fullmatch(r"/admin/locations/(\d+)/(delete|up|down)", p)
+        if m:
+            return self.admin_location_action(int(m.group(1)), m.group(2))
         if p == "/admin/content/save":
             return self.admin_content_save(form)
         if p == "/admin/testimonials/save":
@@ -2070,6 +2227,144 @@ class Handler(BaseHTTPRequestHandler):
                 thumb.unlink()
         self.redirect(f"/admin/galleries/{slug}?done=photo-removed")
 
+    # ---- admin: locations
+    def admin_locations(self, notice):
+        rows = locations(shown_only=False)
+        trs = []
+        for i, r in enumerate(rows):
+            moves = "".join(
+                f'<form method="post" action="/admin/locations/{r["id"]}/{d}"><button class="link-btn"'
+                f'{" disabled" if dis else ""} aria-label="Move {esc(r["name"])} {d}">{lab}</button></form>'
+                for d, lab, dis in (("up", "▲", i == 0), ("down", "▼", i == len(rows) - 1)))
+            trs.append(f"""<tr>
+  <td><a href="/admin/locations/{r['id']}"><strong>{esc(r['name'])}</strong></a><br><span class="muted">/locations/{esc(r['slug'])}</span></td>
+  <td>{esc(r['map']) or '<span class="muted">No map</span>'}</td>
+  <td><span class="tag{' ok' if r['shown'] else ''}">{'Shown' if r['shown'] else 'Hidden'}</span></td>
+  <td class="num"><span class="row-actions">{moves}</span></td></tr>""")
+        table = (f'<div class="table-wrap"><table class="data"><thead><tr><th>Location</th><th>Map</th><th>Status</th>'
+                 f'<th></th></tr></thead><tbody>{"".join(trs)}</tbody></table></div>'
+                 if trs else '<p class="muted">No locations yet.</p>')
+        body = f"""
+  <div class="admin-head"><h1>Locations</h1><a class="btn small" href="/admin/locations/new">New location</a></div>
+  <p class="muted">Each location gets its own page with a map, and a card on the
+     <a href="/locations" target="_blank" rel="noopener">Locations page</a>. The first three also show on the home page.
+     Use the arrows to change the order.</p>
+  {table}"""
+        self.admin_page(body, "Locations", "locations", notice)
+
+    def admin_location_form(self, lid, notice):
+        r = None
+        if lid is not None:
+            with db() as c:
+                r = c.execute("SELECT * FROM locations WHERE id=?", (lid,)).fetchone()
+            if not r:
+                return self.not_found()
+        v = (lambda k: esc(r[k]) if r else "")
+        photo = ""
+        if r:
+            name = r["photo"] or f"location-{r['slug']}.jpg"
+            has = r["photo"] and (PHOTOS / r["photo"]).is_file()
+            img, focus_btn = '<p class="muted">No photo yet.</p>', ""
+            if has:
+                v_ = int((PHOTOS / name).stat().st_mtime)
+                xy = photo_focus().get(name, [50, 50])
+                img = f'<img src="/static/img/photos/{esc(name)}?v={v_}" alt="">'
+                focus_btn = (f'<button type="button" class="link-btn" data-focus="{esc(name)}" data-xy="{xy[0]:g},{xy[1]:g}" '
+                             f'data-src="/static/img/photos/{esc(name)}?v={v_}">Focus point</button>')
+            photo = f"""
+  <section class="card-pad loc-photo">
+    <h2>Photo</h2>
+    {img}
+    <div class="row-actions">
+      <label class="btn ghost small" data-upload="/admin/upload?kind=location&amp;slug={quote(r['slug'])}&amp;name={quote(name)}" data-crop="2000x1250">{'Replace photo' if has else 'Add a photo'}<input type="file" accept="image/*" hidden></label>
+      {focus_btn}
+    </div>
+    <div class="progress" aria-live="polite"></div>
+  </section>"""
+        preview = ""
+        if r and (r["map"] or "").strip():
+            preview = (f'<div class="map-embed full"><iframe src="{esc(map_embed_url(r["map"].strip()))}" title="Map preview" '
+                       f'loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>')
+        form = f"""
+  <form method="post" action="/admin/locations/save" class="form card-pad">
+    <input type="hidden" name="id" value="{r['id'] if r else ''}">
+    <label>Name<input name="name" required maxlength="120" value="{v('name')}" placeholder="Centennial Park"></label>
+    <label>Web address <span class="opt">(/locations/…)</span><input name="slug" maxlength="60" value="{v('slug')}" placeholder="made from the name"></label>
+    <label class="full">Map location <span class="opt">(an address or place name, as you'd type it into Google Maps)</span>
+      <input name="map" maxlength="200" value="{v('map')}" placeholder="Centennial Park, Ellicott City, MD"></label>
+    {preview}
+    <label class="full">Card text <span class="opt">(one or two sentences for the Locations page and home page)</span>
+      <textarea name="summary" rows="2" maxlength="400">{v('summary')}</textarea></label>
+    <label>Small label above the heading<input name="area" maxlength="120" value="{v('area')}" placeholder="Ellicott City, MD"></label>
+    <label>Page heading <span class="opt">(*stars* for italics)</span><input name="heading" maxlength="160" value="{v('heading')}" placeholder="Family photos at *Centennial Park*"></label>
+    <label class="full">Intro<textarea name="intro" rows="3" maxlength="2000">{v('intro')}</textarea></label>
+    <label class="full">More about it <span class="opt">(leave a blank line between paragraphs)</span><textarea name="body" rows="5" maxlength="6000">{v('body')}</textarea></label>
+    <label class="full">Spots heading<input name="spots_title" maxlength="160" value="{v('spots_title') or 'Spots I love'}"></label>
+    <label class="full">Favorite spots <span class="opt">(one per line; **two stars** for bold)</span><textarea name="spots" rows="5" maxlength="4000">{v('spots')}</textarea></label>
+    <label class="full">Good to know <span class="opt">(parking, fees, best light)</span><textarea name="tips" rows="4" maxlength="4000">{v('tips')}</textarea></label>
+    <label>Google title <span class="opt">(optional)</span><input name="seo_title" maxlength="120" value="{v('seo_title')}"></label>
+    <label>Google description <span class="opt">(optional)</span><input name="seo_description" maxlength="300" value="{v('seo_description')}"></label>
+    <label class="toggle full"><input type="checkbox" name="shown" value="1"{' checked' if not r or r['shown'] else ''}> Show this location on the website</label>
+    <div class="full row-actions"><button class="btn">{'Save changes' if r else 'Create location'}</button>
+      <a class="btn ghost" href="/admin/locations">Back to locations</a>
+      {f'<a href="/locations/{esc(r["slug"])}" target="_blank" rel="noopener">View page ↗</a>' if r and r['shown'] else ''}</div>
+  </form>"""
+        delete = ""
+        if r:
+            delete = f"""
+  <form method="post" action="/admin/locations/{r['id']}/delete" class="mt-xl"
+        data-confirm="Delete “{esc(r['name'])}”? Its page and card are removed from the website.">
+    <button class="btn ghost small danger">Delete location</button></form>"""
+        title = r["name"] if r else "New location"
+        body = f"""
+  <div class="admin-head"><h1>{esc(title)}</h1></div>
+  {'' if r else '<p class="muted">You can add a photo after creating the location.</p>'}
+  {photo}{form}{delete}"""
+        self.admin_page(body, title, "locations", notice, crumbs=[("Locations", "/admin/locations"), (title, "")])
+
+    def admin_location_save(self, form):
+        lid = int(form["id"]) if form.get("id", "").isdigit() else None
+        name = form.get("name", "").strip()[:120]
+        if not name:
+            return self.redirect((f"/admin/locations/{lid}" if lid else "/admin/locations/new") + "?done=location-invalid")
+        slug = slugify(form.get("slug", "").strip() or name)[:60].strip("-") or "location"
+        fields = {k: form.get(k, "").replace("\r\n", "\n").strip()[:6000]
+                  for k in ("area", "heading", "summary", "intro", "body", "spots_title", "spots", "tips", "map",
+                            "seo_title", "seo_description")}
+        fields.update(name=name, slug=slug, shown=1 if form.get("shown") else 0)
+        with DB_LOCK, db() as c:
+            clash = c.execute("SELECT id FROM locations WHERE slug=? AND id IS NOT ?", (slug, lid)).fetchone()
+            if clash:
+                return self.redirect((f"/admin/locations/{lid}" if lid else "/admin/locations/new") + "?done=slug-taken")
+            if lid:
+                c.execute(f"UPDATE locations SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), lid))
+            else:
+                top = c.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM locations").fetchone()[0]
+                fields.update(created=time.strftime("%Y-%m-%d %H:%M"), sort=top)
+                lid = c.execute(f"INSERT INTO locations ({', '.join(fields)}) VALUES ({', '.join('?' * len(fields))})",
+                                tuple(fields.values())).lastrowid
+        self.redirect(f"/admin/locations/{lid}?done=location-saved")
+
+    def admin_location_action(self, lid, action):
+        with DB_LOCK, db() as c:
+            r = c.execute("SELECT * FROM locations WHERE id=?", (lid,)).fetchone()
+            if not r:
+                return self.not_found()
+            if action == "delete":
+                c.execute("DELETE FROM locations WHERE id=?", (lid,))
+                if r["photo"] and (PHOTOS / r["photo"]).is_file():
+                    trash = DATA / "trash" / time.strftime("%Y%m%d-%H%M%S")
+                    trash.mkdir(parents=True, exist_ok=True)
+                    (PHOTOS / r["photo"]).rename(trash / r["photo"])
+                return self.redirect("/admin/locations?done=location-deleted")
+            ids = [x["id"] for x in c.execute("SELECT id FROM locations ORDER BY sort, id")]
+            i = ids.index(lid)
+            j = i - 1 if action == "up" else i + 1
+            if 0 <= j < len(ids):
+                ids[i], ids[j] = ids[j], ids[i]
+            c.executemany("UPDATE locations SET sort=? WHERE id=?", [(n, x) for n, x in enumerate(ids)])
+        self.redirect("/admin/locations")
+
     # ---- admin: site text and testimonials
     def admin_content(self, page, notice):
         pages = content_pages()
@@ -2216,6 +2511,7 @@ class Handler(BaseHTTPRequestHandler):
                 if name in text:
                     rel = f.relative_to(PAGES).with_suffix("").as_posix().replace("/index", "")
                     hits.append("Home" if rel == "index" else rel.replace("-", " ").replace("/", " › ").title())
+            hits += [f"Locations › {r['name']}" for r in locations(shown_only=False) if r["photo"] == name]
             return ", ".join(sorted(hits)) or "Not used on any page"
 
         focus = photo_focus()
@@ -2225,7 +2521,7 @@ class Handler(BaseHTTPRequestHandler):
             kb = f.stat().st_size / 1024
             size = f"{kb / 1024:.1f} MB" if kb >= 1024 else f"{kb:.0f} KB"
             hint = PHOTO_HINTS.get(name, "Portfolio photo, any shape" if portfolio else "")
-            shape = PHOTO_SHAPES.get(name)
+            shape = PHOTO_SHAPES.get(name) or ((2000, 1250) if name.startswith("location-") else None)
             if shape:
                 hint += f" · {shape[0]}×{shape[1]}"
             crop = f' data-crop="{shape[0]}x{shape[1]}"' if shape else ""
@@ -2344,6 +2640,11 @@ class Handler(BaseHTTPRequestHandler):
             folder = g["folder"]
         elif kind in ("site", "portfolio"):
             folder = PHOTOS
+        elif kind == "location":
+            loc = location_by_slug(q.get("slug", ""))
+            if not loc:
+                return fail("Location not found.", 404)
+            folder = PHOTOS
         else:
             return fail("Unknown upload type.")
 
@@ -2381,6 +2682,21 @@ class Handler(BaseHTTPRequestHandler):
                     focus = photo_focus()
                     if focus.pop(raw_name, None):
                         save_photo_focus(focus)
+            elif kind == "location":
+                if ext != ".jpg":
+                    tmp.unlink()
+                    return self.send(400, json.dumps({"ok": False, "error": "Please upload a JPEG photo."}), "application/json")
+                dest = PHOTOS / (loc["photo"] or f"location-{loc['slug']}.jpg")
+                if dest.exists():
+                    trash = DATA / "trash" / time.strftime("%Y%m%d-%H%M%S")
+                    trash.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, trash / dest.name)
+                with DB_LOCK:
+                    focus = photo_focus()
+                    if focus.pop(dest.name, None):
+                        save_photo_focus(focus)
+                    with db() as c:
+                        c.execute("UPDATE locations SET photo=? WHERE id=?", (dest.name, loc["id"]))
             elif kind == "portfolio":
                 nums = [int(m.group(1)) for n in portfolio_photos() if (m := re.match(r"portfolio-(\d+)", n))]
                 dest = PHOTOS / f"portfolio-{(max(nums) + 1 if nums else 1):02d}{ext}"
