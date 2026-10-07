@@ -374,9 +374,18 @@ def read_page(path):
         for k in ("title", "description"):
             if saved.get(k):
                 meta[k] = saved[k]
-        text = EDITABLE.sub(lambda m: (m.group(0) if m.group(3) not in saved else
-                                       f"<{m.group(1)}{m.group(2)}>{text_to_html(saved[m.group(3)])}</{m.group(1)}>"), text)
+        text = apply_site_text(text, saved)
     return meta, text
+
+
+def apply_site_text(text, saved):
+    return EDITABLE.sub(lambda m: (m.group(0) if m.group(3) not in saved else
+                                   f"<{m.group(1)}{m.group(2)}>{text_to_html(saved[m.group(3)])}</{m.group(1)}>"), text)
+
+
+def content_file(page):
+    """The file behind a Site text page: pages/<page>.html, or the shared layout for the footer."""
+    return TEMPLATES / "layout.html" if page == "layout" else PAGES / f"{page}.html"
 
 
 def locations(shown_only=True):
@@ -469,6 +478,7 @@ def content_pages():
     for n in names:
         if 'data-edit="' in found[n].read_text(encoding="utf-8"):
             out[n] = labels.get(n, n.split("/")[-1].replace("-", " ").title())
+    out["layout"] = "Footer"  # shared by every page
     return out
 
 
@@ -586,7 +596,7 @@ def render(body, title, description="", path="/", extra_head="", noindex=False):
         if not values["testimonials"]:  # no reviews to show: drop the whole section
             body = re.sub(r"<section(?:(?!</section>).)*?\{\{testimonials\}\}.*?</section>\s*", "", body, flags=re.S)
     values["content"] = fill(body, values)
-    layout = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
+    layout = apply_site_text((TEMPLATES / "layout.html").read_text(encoding="utf-8"), site_text("layout"))
     return version_photo_urls(focus_css_link(fill(layout, values)))
 
 
@@ -2731,10 +2741,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_page(head + self.testimonials_editor(), "Testimonials", "content", notice)
         if page not in pages:
             return self.not_found()
-        f = PAGES / f"{page}.html"
-        meta, body = read_page_file(f)
+        meta, body = read_page_file(content_file(page))
         saved = site_text(page)
-        path = "/" + page.removesuffix("index").rstrip("/") if page != "index" else "/"
+        path = "/" + page.removesuffix("index").rstrip("/") if page not in ("index", "layout") else "/"
 
         def field(name, label, default, rows=None):
             value = saved.get(name, default)
@@ -2757,18 +2766,20 @@ class Handler(BaseHTTPRequestHandler):
                 fields.append(field(n, label, html_to_text(inner)))
             if fields:
                 title = re.search(r"<h[12][^>]*>(.*?)</h[12]>", chunk, re.S)
-                title = html_to_text(title.group(1)).replace("*", "") if title else "Section"
+                title = (html_to_text(title.group(1)).replace("*", "") if title else
+                         "Footer (on every page)" if page == "layout" else "Section")
                 groups.append(f'<fieldset class="full card-pad content-group"><legend>{esc(title)}</legend>{"".join(fields)}</fieldset>')
+        seo = f"""<fieldset class="full card-pad content-group"><legend>Search &amp; sharing</legend>
+      {field("title", "Page title (browser tab and Google)", meta.get("title", ""), 1)}
+      {field("description", "Description (shown under the title in Google)", meta.get("description", ""), 2)}
+    </fieldset>"""
         content = f"""
   <p class="muted">Edit the words on each page, then save. Put *stars* around words for <em>italics</em>
      (the script-style words in headings) and **two stars** for <strong>bold</strong>.
      Clear a box to go back to the original text. <a href="{path}" target="_blank" rel="noopener">View this page</a></p>
   <form method="post" action="/admin/content/save" class="form">
     <input type="hidden" name="page" value="{page}">
-    <fieldset class="full card-pad content-group"><legend>Search &amp; sharing</legend>
-      {field("title", "Page title (browser tab and Google)", meta.get("title", ""), 1)}
-      {field("description", "Description (shown under the title in Google)", meta.get("description", ""), 2)}
-    </fieldset>
+    {"" if page == "layout" else seo}
     {"".join(groups)}
     <div class="full row-actions sticky-save"><button class="btn">Save changes</button></div>
   </form>"""
@@ -2778,9 +2789,10 @@ class Handler(BaseHTTPRequestHandler):
         page = form.get("page", "")
         if page not in content_pages():
             return self.not_found()
-        meta, body = read_page_file(PAGES / f"{page}.html")
+        meta, body = read_page_file(content_file(page))
         defaults = {m.group(3): html_to_text(m.group(5)) for m in EDITABLE.finditer(body)}
-        defaults.update(title=meta.get("title", ""), description=meta.get("description", ""))
+        if page != "layout":
+            defaults.update(title=meta.get("title", ""), description=meta.get("description", ""))
         now, who = time.strftime("%Y-%m-%d %H:%M"), getattr(self, "admin_user", "")
         with DB_LOCK, db() as c:
             for name, default in defaults.items():

@@ -149,7 +149,8 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   the Locations page, and the first three on the home page. Stored in the
   `locations` table; the three original pages are added there on first run.
 - **Site text:** edit the words on every public page (headings, paragraphs,
-  prices, list items, and each page's Google title and description), plus the
+  prices, list items, and each page's Google title and description), the
+  **Footer** service-area line (`templates/layout.html`), plus the
   home page **Testimonials** (add, edit, hide, reorder, delete). Saved text is
   kept in the database and shows right away; clearing a box brings back the
   original text from `pages/`. Editable elements are marked `data-edit="<n>"`
