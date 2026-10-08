@@ -310,6 +310,7 @@ with db() as _c:
                     "family": "TEXT", "notes": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'",
                     "adults": "INTEGER", "kids": "INTEGER"},
         "promo_codes": {"session_types": "TEXT"},
+        "page_views": {"place": "TEXT"},
         "mini_events": {"price": "TEXT", "details": "TEXT", "gap_minutes": "INTEGER NOT NULL DEFAULT 0",
                         "status": "TEXT NOT NULL DEFAULT 'draft'", "location_slug": "TEXT"},
         "mini_bookings": {"phone": "TEXT", "people": "TEXT", "notes": "TEXT", "client_id": "INTEGER",
@@ -1045,7 +1046,25 @@ def referrer_source(ref, own_host):
     return host[:80]
 
 
-def record_view(path, ip, ua, ref, country):
+def header_text(value):
+    """A header value as text (http.server reads headers as Latin-1; Cloudflare sends UTF-8)."""
+    try:
+        return (value or "").encode("latin-1").decode("utf-8").strip()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return (value or "").strip()
+
+
+def visitor_place(city, region, region_code, country):
+    """"Ellicott City, MD" from Cloudflare's visitor location headers; "" when not sent."""
+    city = re.sub(r"[^\w .,'-]", "", header_text(city))[:60]
+    if not city:
+        return ""
+    area = header_text(region_code) if country == "US" else header_text(region)
+    area = re.sub(r"[^\w .'-]", "", area)[:40]
+    return f"{city}, {area}" if area else city
+
+
+def record_view(path, ip, ua, ref, country, place=""):
     if not ua or BOT_UA.search(ua):
         return
     day = time.strftime("%Y-%m-%d")
@@ -1054,9 +1073,9 @@ def record_view(path, ip, ua, ref, country):
     country = country.upper() if re.fullmatch(r"[A-Za-z]{2}", country or "") and country.upper() not in ("XX", "T1") else ""
     try:
         with DB_LOCK, db() as c:
-            c.execute("INSERT INTO page_views (day, path, visitor, device, browser, os, referrer, country) "
-                      "VALUES (?,?,?,?,?,?,?,?)", (day, path[:200], visitor, ua_device(ua), ua_browser(ua), ua_os(ua),
-                                                   referrer_source(ref, own), country))
+            c.execute("INSERT INTO page_views (day, path, visitor, device, browser, os, referrer, country, place) "
+                      "VALUES (?,?,?,?,?,?,?,?,?)", (day, path[:200], visitor, ua_device(ua), ua_browser(ua), ua_os(ua),
+                                                     referrer_source(ref, own), country, place))
             if _stats_pruned["day"] != day:
                 _stats_pruned["day"] = day
                 cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - STATS_KEEP_DAYS * 86400))
@@ -1375,8 +1394,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path_only
         if path.startswith("/gallery/"):
             path = "/gallery/…"  # keep private gallery names out of the stats
+        country = h.get("CF-IPCountry", "").upper()
         record_view(path, h.get("CF-Connecting-IP") or self.client_ip(), h.get("User-Agent", ""),
-                    h.get("Referer", ""), h.get("CF-IPCountry", ""))
+                    h.get("Referer", ""), country,
+                    visitor_place(h.get("CF-IPCity"), h.get("CF-Region"), h.get("CF-Region-Code"), country))
 
     def not_found(self):
         meta, body = read_page(PAGES / "404.html")
@@ -2635,6 +2656,7 @@ class Handler(BaseHTTPRequestHandler):
                               "WHERE day >= ? GROUP BY path ORDER BY n DESC LIMIT 15", (since,)).fetchall()
             devices, browsers, systems = top("device"), top("browser"), top("os")
             sources, countries = top("referrer", blank="Direct / unknown"), top("country")
+            places = top("place", limit=15)
             requests = (c.execute("SELECT COUNT(*) FROM inquiries WHERE substr(created, 1, 10) >= ?", (since,)).fetchone()[0]
                         + c.execute("SELECT COUNT(*) FROM mini_bookings WHERE substr(created, 1, 10) >= ?",
                                     (since,)).fetchone()[0])
@@ -2687,6 +2709,7 @@ class Handler(BaseHTTPRequestHandler):
   <div class="visit-grid">
     {pages_html}
     {table("Where they came from", sources, visitors)}
+    {table("Towns", places, visitors)}
     {table("Devices", devices, visitors)}
     {table("Browsers", browsers, visitors)}
     {table("Systems", systems, visitors)}
@@ -2694,7 +2717,9 @@ class Handler(BaseHTTPRequestHandler):
   </div>
   <p class="muted small mt">Counted on your own server: no cookies or tracking for visitors, and no IP addresses are
      stored. Search engines and bots are left out, and so are your own visits from any browser you've used the admin in.
-     "Where they came from" only knows about links people clicked; typed addresses and many apps show as Direct.</p>"""
+     "Where they came from" only knows about links people clicked; typed addresses and many apps show as Direct.
+     Towns are Cloudflare's best guess from the visitor's internet connection, so phones on cell data can show a
+     nearby bigger town.</p>"""
         self.admin_page(body, "Visitors", "visitors")
 
     # ---- admin: prices and promo codes

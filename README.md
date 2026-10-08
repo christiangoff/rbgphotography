@@ -144,7 +144,9 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   30, 90 or 365 days. Counted by the site itself in the `page_views` table: no cookies
   for visitors and no IP addresses stored (each visitor is a daily-changing hash).
   Bots are skipped, and so are visits from any browser that has opened the admin.
-  Countries come from Cloudflare's `CF-IPCountry` header. Kept for 400 days.
+  Countries come from Cloudflare's `CF-IPCountry` header; towns ("Ellicott City, MD")
+  need Cloudflare's **Add visitor location headers** managed transform turned on
+  (Rules → Transform Rules → Managed Transforms). Kept for 400 days.
 - **Prices & promos:** prices are not shown on the website. Set a default price
   per session type; a session's price starts from it and goes into emails as
   `{price}` (and `{balance}`, less any deposit paid and promo discount). Create
