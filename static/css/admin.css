@@ -81,3 +81,20 @@ label.toggle input { width: auto; margin: 0; }
 label.toggle.small { font-size: .85rem; padding: 0; align-self: auto; }
 .photo-card .feature-form { flex-basis: 100%; }
 [hidden] { display: none !important; }
+
+/* Visitors page */
+.visit-chart { display: block; width: 100%; height: 180px; }
+.visit-chart rect { fill: var(--terracotta); opacity: .85; }
+.visit-chart rect:hover { opacity: 1; fill: var(--forest); }
+.visit-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; margin-top: .4rem; }
+.visit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+.visit-grid .card-pad { margin: 0; }
+.visit-grid .span-2 { grid-column: 1 / -1; }
+@media (max-width: 900px) { .visit-grid { grid-template-columns: 1fr; } }
+table.data.compact td, table.data.compact th { padding: .5rem .8rem; }
+table.data.compact td:first-child { word-break: break-word; }
+table.data .pct { white-space: nowrap; color: var(--muted); font-size: .85rem; width: 9rem; }
+.pct progress { width: 5rem; height: .5rem; vertical-align: middle; appearance: none; border: 0; border-radius: 4px; background: #EFE9DF; overflow: hidden; }
+.pct progress::-webkit-progress-bar { background: #EFE9DF; border-radius: 4px; }
+.pct progress::-webkit-progress-value { background: var(--sage, #8A9A85); border-radius: 4px; }
+.pct progress::-moz-progress-bar { background: var(--sage, #8A9A85); border-radius: 4px; }

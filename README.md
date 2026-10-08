@@ -139,6 +139,12 @@ shows new requests, upcoming sessions, recent galleries and shortcuts for common
   away. Galleries not linked to a session are never watermarked. Needs Pillow
   (`sudo apt install -y python3-pil`); copies are cached in each gallery's
   `.watermarked/` folder.
+- **Visitors:** visitors, page views, booking requests, a daily chart, top pages,
+  where visitors came from, devices, browsers, systems and countries for the last 7,
+  30, 90 or 365 days. Counted by the site itself in the `page_views` table: no cookies
+  for visitors and no IP addresses stored (each visitor is a daily-changing hash).
+  Bots are skipped, and so are visits from any browser that has opened the admin.
+  Countries come from Cloudflare's `CF-IPCountry` header. Kept for 400 days.
 - **Prices & promos:** prices are not shown on the website. Set a default price
   per session type; a session's price starts from it and goes into emails as
   `{price}` (and `{balance}`, less any deposit paid and promo discount). Create

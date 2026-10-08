@@ -61,7 +61,8 @@ ADMIN_SECTIONS = [("dashboard", "/admin", "Dashboard"), ("sessions", "/admin/ses
                   ("galleries", "/admin/galleries", "Galleries"),
                   ("emails", "/admin/emails", "Emails"),
                   ("photos", "/admin/photos", "Site photos"), ("content", "/admin/content", "Site text"),
-                  ("locations", "/admin/locations", "Locations"), ("pricing", "/admin/pricing", "Prices & promos")]
+                  ("locations", "/admin/locations", "Locations"), ("pricing", "/admin/pricing", "Prices & promos"),
+                  ("visitors", "/admin/visitors", "Visitors")]
 # Simple line icons for the admin sidebar (24x24, stroke = currentColor)
 ADMIN_ICONS = {
     "dashboard": '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -74,6 +75,7 @@ ADMIN_ICONS = {
     "content": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
     "locations": '<path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.4"/>',
     "pricing": '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
+    "visitors": '<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>',
 }
 NOTICES = {"client-saved": "Client saved.", "client-deleted": "Client deleted.",
            "gallery-saved": "Gallery saved.", "gallery-deleted": "Gallery moved to the trash folder.",
@@ -286,6 +288,10 @@ with db() as _c:
                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        [(time.strftime("%Y-%m-%d %H:%M"), *row, n) for n, row in enumerate(SEED_LOCATIONS)])
     _c.execute("""CREATE TABLE IF NOT EXISTS session_prices (session_type TEXT PRIMARY KEY, price TEXT)""")
+    _c.execute("""CREATE TABLE IF NOT EXISTS page_views (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, path TEXT NOT NULL, visitor TEXT NOT NULL,
+        device TEXT, browser TEXT, os TEXT, referrer TEXT, country TEXT)""")
+    _c.execute("CREATE INDEX IF NOT EXISTS page_views_day ON page_views(day, visitor)")
     _c.execute("""CREATE TABLE IF NOT EXISTS promo_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, code TEXT UNIQUE NOT NULL,
         offer TEXT NOT NULL, discount TEXT, expires TEXT, max_uses INTEGER, active INTEGER NOT NULL DEFAULT 1)""")
@@ -992,6 +998,84 @@ def end_of(hhmm, minutes):
     return f"{t // 60:02d}:{t % 60:02d}"
 
 
+# ---- visitor stats (kept on the Pi; no cookies, no IP addresses stored)
+BOT_UA = re.compile(r"bot|crawl|spider|slurp|curl|wget|python|httpclient|java/|go-http|headless|preview|"
+                    r"facebookexternalhit|monitor|uptime|lighthouse|pingdom|scan|fetch|validator|feed", re.I)
+STATS_KEEP_DAYS = 400
+_stats_pruned = {"day": ""}
+
+
+def ua_device(ua):
+    if re.search(r"iPad|Tablet|Kindle|Silk", ua) or ("Android" in ua and "Mobile" not in ua):
+        return "Tablet"
+    if re.search(r"Mobi|iPhone|iPod|Android", ua):
+        return "Phone"
+    return "Computer"
+
+
+def ua_browser(ua):
+    for pat, name in [(r"FBAN|FBAV", "Facebook app"), (r"Instagram", "Instagram app"), (r"Pinterest", "Pinterest app"),
+                      (r"Edg/|EdgA/|EdgiOS/", "Edge"), (r"OPR/|Opera", "Opera"), (r"SamsungBrowser", "Samsung Internet"),
+                      (r"FxiOS|Firefox/", "Firefox"), (r"CriOS|Chrome/", "Chrome"), (r"Safari/", "Safari")]:
+        if re.search(pat, ua):
+            return name
+    return "Other"
+
+
+def ua_os(ua):
+    for pat, name in [(r"iPhone|iPad|iPod", "iOS"), (r"Android", "Android"), (r"Windows", "Windows"),
+                      (r"CrOS", "ChromeOS"), (r"Mac OS X|Macintosh", "macOS"), (r"Linux", "Linux")]:
+        if re.search(pat, ua):
+            return name
+    return "Other"
+
+
+def referrer_source(ref, own_host):
+    """Where a visit came from, as a short name ("Google", "Instagram", "example.com"); "" for none/internal."""
+    host = (urlsplit(ref).hostname or "").lower() if ref else ""
+    host = host[4:] if host.startswith("www.") else host
+    if not host or host == own_host or host.endswith("." + own_host):
+        return ""
+    for pat, name in [(r"(^|\.)google\.", "Google"), (r"(^|\.)bing\.com$", "Bing"), (r"duckduckgo\.com$", "DuckDuckGo"),
+                      (r"yahoo\.", "Yahoo"), (r"(^|\.)(facebook\.com|fb\.com|fb\.me)$", "Facebook"),
+                      (r"instagram\.com$", "Instagram"), (r"pinterest\.", "Pinterest"), (r"(^|\.)t\.co$|twitter\.com$|x\.com$", "X / Twitter"),
+                      (r"nextdoor\.com$", "Nextdoor"), (r"linkedin\.com$|lnkd\.in$", "LinkedIn")]:
+        if re.search(pat, host):
+            return name
+    return host[:80]
+
+
+def record_view(path, ip, ua, ref, country):
+    if not ua or BOT_UA.search(ua):
+        return
+    day = time.strftime("%Y-%m-%d")
+    visitor = hmac.new(SECRET, f"visitor|{day}|{ip}|{ua}".encode(), hashlib.sha256).hexdigest()[:16]
+    own = (urlsplit(CFG["server"]["site_url"]).hostname or "").lower().removeprefix("www.")
+    country = country.upper() if re.fullmatch(r"[A-Za-z]{2}", country or "") and country.upper() not in ("XX", "T1") else ""
+    try:
+        with DB_LOCK, db() as c:
+            c.execute("INSERT INTO page_views (day, path, visitor, device, browser, os, referrer, country) "
+                      "VALUES (?,?,?,?,?,?,?,?)", (day, path[:200], visitor, ua_device(ua), ua_browser(ua), ua_os(ua),
+                                                   referrer_source(ref, own), country))
+            if _stats_pruned["day"] != day:
+                _stats_pruned["day"] = day
+                cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - STATS_KEEP_DAYS * 86400))
+                c.execute("DELETE FROM page_views WHERE day < ?", (cutoff,))
+    except sqlite3.Error as exc:
+        print(f"stats: {exc!r}", file=sys.stderr)
+
+
+def stats_since(days):
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
+
+
+def visitor_count(days):
+    """Visitors in the last `days` days (each person counted once per day)."""
+    with db() as c:
+        return c.execute("SELECT COUNT(DISTINCT day || visitor) FROM page_views WHERE day >= ?",
+                         (stats_since(days),)).fetchone()[0]
+
+
 def calendar_token():
     return hmac.new(SECRET, b"calendar-feed", hashlib.sha256).hexdigest()[:32]
 
@@ -1280,6 +1364,19 @@ class Handler(BaseHTTPRequestHandler):
     def page(self, body, title, description="", status=200, **kw):
         out = render(body, title, description, path=self.path_only, **kw)
         self.send(status, out, headers={"Cache-Control": "no-cache"})
+        if status == 200 and self.command == "GET":
+            self.count_view()
+
+    def count_view(self):
+        """Count a public page view for the admin's Visitors page (not the admins' own visits)."""
+        h = self.headers
+        if "rbg_staff" in self.cookies() or h.get("Purpose") == "prefetch" or h.get("Sec-Purpose", "").startswith("prefetch"):
+            return
+        path = self.path_only
+        if path.startswith("/gallery/"):
+            path = "/gallery/…"  # keep private gallery names out of the stats
+        record_view(path, h.get("CF-Connecting-IP") or self.client_ip(), h.get("User-Agent", ""),
+                    h.get("Referer", ""), h.get("CF-IPCountry", ""))
 
     def not_found(self):
         meta, body = read_page(PAGES / "404.html")
@@ -1577,7 +1674,10 @@ class Handler(BaseHTTPRequestHandler):
             "admin_user": esc(getattr(self, "admin_user", CFG["admin"]["username"])), "content": body,
         })
         layout = (TEMPLATES / "admin.html").read_text(encoding="utf-8")
-        self.send(200, version_photo_urls(focus_css_link(fill(layout, values))), headers={"Cache-Control": "no-store"})
+        self.send(200, version_photo_urls(focus_css_link(fill(layout, values))), headers={
+            "Cache-Control": "no-store",
+            # marks this browser as staff so the Visitors page doesn't count your own visits
+            "Set-Cookie": f"rbg_staff=1; Path=/; Max-Age={60 * 60 * 24 * 365}; SameSite=Lax; HttpOnly"})
 
     def query(self):
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
@@ -1635,6 +1735,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_emails(q.get("edit", ""), notice)
         if p == "/admin/pricing":
             return self.admin_pricing(q.get("edit", ""), notice)
+        if p == "/admin/visitors":
+            return self.admin_visitors(q.get("days", "30"))
         if p == "/admin/locations":
             return self.admin_locations(notice)
         if p == "/admin/locations/new":
@@ -1748,6 +1850,7 @@ class Handler(BaseHTTPRequestHandler):
             stat(clients, "Clients", "/admin/clients", "Leads and active families"),
             stat(live, "Live galleries", "/admin/galleries", "Clients can open these now"),
             stat(len(portfolio_photos()), "Portfolio photos", "/admin/photos", "Shown on the Portfolio page"),
+            stat(visitor_count(7), "Visitors", "/admin/visitors?days=7", "On the website in the last 7 days"),
         ])
         inbox = "".join(
             f'<li><a href="/admin/sessions?status=new#s{r["id"]}"><strong>{esc(r["name"])}</strong></a> '
@@ -2513,6 +2616,86 @@ class Handler(BaseHTTPRequestHandler):
             if thumb.is_file():
                 thumb.unlink()
         self.redirect(f"/admin/galleries/{slug}?done=photo-removed")
+
+    # ---- admin: visitor stats
+    def admin_visitors(self, days):
+        days = int(days) if days in ("7", "30", "90", "365") else 30
+        since = stats_since(days)
+        with db() as c:
+            daily = {r[0]: (r[1], r[2]) for r in c.execute(
+                "SELECT day, COUNT(DISTINCT visitor), COUNT(*) FROM page_views WHERE day >= ? GROUP BY day", (since,))}
+
+            def top(col, limit=10, blank="Unknown"):
+                # each visit counted once, from its first page view (where they arrived from)
+                rows = c.execute(f"SELECT COALESCE(NULLIF({col}, ''), ?) AS k, COUNT(*) AS n FROM page_views "
+                                 f"WHERE id IN (SELECT MIN(id) FROM page_views WHERE day >= ? GROUP BY day, visitor) "
+                                 f"GROUP BY k ORDER BY n DESC LIMIT ?", (blank, since, limit)).fetchall()
+                return [(r[0], r[1]) for r in rows]
+            pages = c.execute("SELECT path, COUNT(*) AS n, COUNT(DISTINCT day || visitor) AS v FROM page_views "
+                              "WHERE day >= ? GROUP BY path ORDER BY n DESC LIMIT 15", (since,)).fetchall()
+            devices, browsers, systems = top("device"), top("browser"), top("os")
+            sources, countries = top("referrer", blank="Direct / unknown"), top("country")
+            requests = (c.execute("SELECT COUNT(*) FROM inquiries WHERE substr(created, 1, 10) >= ?", (since,)).fetchone()[0]
+                        + c.execute("SELECT COUNT(*) FROM mini_bookings WHERE substr(created, 1, 10) >= ?",
+                                    (since,)).fetchone()[0])
+        visitors = sum(v for v, _ in daily.values())
+        views = sum(n for _, n in daily.values())
+
+        # one bar per day (visitors), drawn as SVG
+        dates = [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(days - 1, -1, -1)]
+        peak = max([daily.get(d, (0, 0))[0] for d in dates] + [1])
+        w, h, gap = 1000, 180, (2 if days <= 90 else 0)
+        bw = w / len(dates)
+        bars = "".join(
+            f'<rect x="{i * bw + gap / 2:.1f}" y="{h - max(daily.get(d, (0, 0))[0] / peak * h, 0):.1f}" '
+            f'width="{max(bw - gap, 1):.1f}" height="{daily.get(d, (0, 0))[0] / peak * h:.1f}" rx="2">'
+            f'<title>{esc(nice_date(d))}: {daily.get(d, (0, 0))[0]} visitors, {daily.get(d, (0, 0))[1]} page views</title></rect>'
+            for i, d in enumerate(dates))
+        chart = (f'<svg class="visit-chart" viewBox="0 0 {w} {h}" preserveAspectRatio="none" role="img" '
+                 f'aria-label="Visitors per day">{bars}</svg>'
+                 f'<div class="visit-axis"><span>{esc(nice_date(dates[0]))}</span><span>Today</span></div>')
+
+        def table(title, rows, total, label="Visitors"):
+            if not rows:
+                return f'<section class="card-pad"><h2>{title}</h2><p class="muted">Nothing yet.</p></section>'
+            trs = "".join(
+                f'<tr><td>{esc(k)}</td><td class="num">{n}</td>'
+                f'<td class="pct"><progress max="{max(total, 1)}" value="{n}"></progress> {round(100 * n / max(total, 1))}%</td></tr>'
+                for k, n in rows)
+            return (f'<section class="card-pad"><h2>{title}</h2><table class="data compact"><thead><tr><th></th>'
+                    f'<th class="num">{label}</th><th></th></tr></thead><tbody>{trs}</tbody></table></section>')
+        page_rows = "".join(
+            f'<tr><td><a href="{esc(r["path"]) if r["path"] != "/gallery/…" else "/gallery"}" target="_blank" '
+            f'rel="noopener">{"Home" if r["path"] == "/" else esc(r["path"])}</a></td><td class="num">{r["v"]}</td><td class="num">{r["n"]}</td></tr>'
+            for r in pages)
+        pages_html = (f'<section class="card-pad span-2"><h2>Top pages</h2><table class="data compact"><thead><tr>'
+                      f'<th>Page</th><th class="num">Visitors</th><th class="num">Views</th></tr></thead>'
+                      f'<tbody>{page_rows}</tbody></table></section>' if pages else
+                      '<section class="card-pad span-2"><h2>Top pages</h2><p class="muted">Nothing yet.</p></section>')
+        tabs = "".join(f'<a href="/admin/visitors?days={d}"{CURRENT if d == days else ""}>{label}</a>'
+                       for d, label in [(7, "7 days"), (30, "30 days"), (90, "90 days"), (365, "Year")])
+        rate = f"{100 * requests / visitors:.1f}%" if visitors else "–"
+        body = f"""
+  <div class="admin-head"><h1>Visitors</h1></div>
+  <nav class="tabs">{tabs}</nav>
+  <div class="stats">
+    <div class="stat"><strong>{visitors}</strong><span>Visitors</span><small>Each person counted once a day</small></div>
+    <div class="stat"><strong>{views}</strong><span>Page views</span><small>{f"{views / visitors:.1f} pages per visitor" if visitors else "&nbsp;"}</small></div>
+    <div class="stat"><strong>{requests}</strong><span>Booking requests</span><small>Sessions and mini spots ({rate} of visitors)</small></div>
+  </div>
+  <section class="card-pad">{chart}</section>
+  <div class="visit-grid">
+    {pages_html}
+    {table("Where they came from", sources, visitors)}
+    {table("Devices", devices, visitors)}
+    {table("Browsers", browsers, visitors)}
+    {table("Systems", systems, visitors)}
+    {table("Countries", countries, visitors)}
+  </div>
+  <p class="muted small mt">Counted on your own server: no cookies or tracking for visitors, and no IP addresses are
+     stored. Search engines and bots are left out, and so are your own visits from any browser you've used the admin in.
+     "Where they came from" only knows about links people clicked; typed addresses and many apps show as Direct.</p>"""
+        self.admin_page(body, "Visitors", "visitors")
 
     # ---- admin: prices and promo codes
     def admin_pricing(self, edit, notice):
